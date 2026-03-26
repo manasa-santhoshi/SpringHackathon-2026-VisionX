@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
 .env
-data/raw/
+data/
 models/
 outputs/
 *.mp4
 CLAUDE.md
 .DS_Store
+.claude
+*.pt
