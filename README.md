@@ -19,10 +19,12 @@ uv pip install -r requirements.txt
 
 >[!Important]
 > You have to download the data from the sources provided and put them in a `data/` folder with the following structure:
->.
->├── processed
->└── raw
->    ├── CHAD
->    └── DLP
->        ├── json
->        └── raw
+> ```
+> .
+> ├── processed
+> └── raw
+>     ├── CHAD
+>     └── DLP
+>         ├── json
+>         └── raw
+> ```

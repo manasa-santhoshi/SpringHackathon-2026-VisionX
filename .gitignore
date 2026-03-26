@@ -6,3 +6,4 @@ models/
 outputs/
 *.mp4
 CLAUDE.md
+.DS_Store
