@@ -2,7 +2,6 @@ __pycache__/
 *.pyc
 .env
 data/
-models/
 outputs/
 *.mp4
 CLAUDE.md
