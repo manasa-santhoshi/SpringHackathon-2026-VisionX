@@ -70,8 +70,13 @@ src/
     run.py               # CLI entry point
   evaluation/
     evaluate.py          # Model vs ground truth comparison
+  anomaly/
+    data.py              # CHAD skeleton dataset loader
+    model.py             # MPED-RNN encoder-decoder LSTM
+    train.py             # Training on normal sequences
+    evaluate.py          # AUC-ROC, AUC-PR, EER evaluation
 dashboard/
-  app.py                 # Streamlit dashboard
+  app.py                 # Streamlit dashboard (Vehicle Analytics + Anomaly Detection)
 ```
 
 ## Usage
@@ -94,6 +99,20 @@ Results are saved to `data/processed/DJI_0012/`.
 python -m src.evaluation.evaluate --scene DJI_0012
 ```
 
+### Anomaly Detection (CHAD)
+
+Train the skeleton-based anomaly detection model:
+```bash
+# Train MPED-RNN on normal skeleton sequences
+python -m src.anomaly.train --data-root data/raw/CHAD/CHAD_Meta
+
+# Train on specific cameras only
+python -m src.anomaly.train --data-root data/raw/CHAD/CHAD_Meta --cameras 1 3
+
+# Evaluate on test set
+python -m src.anomaly.evaluate --model-dir models/anomaly/cam_1_2_3_4
+```
+
 ### Launch dashboard
 ```bash
 streamlit run dashboard/app.py
@@ -104,6 +123,32 @@ streamlit run dashboard/app.py
 - **YOLOv11n** (nano): Fastest inference, suitable for real-time. COCO pretrained weights include car/truck/bus/motorcycle classes. The drone's bird-eye view differs from COCO's typical perspective, which may reduce accuracy — fine-tuning on drone data is a future improvement.
 - **ByteTrack**: Simple, fast multi-object tracker. Works well for parking lot scenarios where vehicles move slowly and occlusion is minimal from a drone view.
 - **Homography**: Assumes a flat ground plane (valid for a parking lot). Computed from DLP XML annotations which provide corresponding pixel and UTM coordinates per vehicle.
+
+## Anomaly Detection
+
+Multi-camera anomaly detection for parking lot safety using the [CHAD](https://github.com/TeCSAR-UNCC/CHAD) dataset.
+
+### Approach
+
+- **Model**: MPED-RNN (Message-Passing Encoder-Decoder RNN) — an encoder-decoder LSTM with two heads:
+  - **Reconstruction head**: Reconstructs the input skeleton sequence in reverse
+  - **Prediction head**: Predicts future skeleton poses autoregressively
+- **Training**: Unsupervised — trained only on normal skeleton sequences. High reconstruction/prediction error indicates anomalous behavior
+- **Input**: Pre-extracted 17-joint COCO keypoints (x, y coordinates) from CHAD .pkl annotations — no pixel data processed
+- **Privacy-by-design**: Operates exclusively on skeleton coordinates, preserving individual privacy
+- **Multi-camera**: CHAD provides 4 overlapping camera views of the same parking lot; the model evaluates each camera independently
+
+### Anomaly Types Detected
+
+CHAD contains 22 anomalous behaviors: fighting, punching, kicking, pushing, pulling, strangling, theft, pick-pocketing, tripping, chasing, throwing, running, falling, littering, jumping, hopping, sleeping, and more.
+
+### Metrics
+
+- **AUC-ROC**: Area Under ROC Curve (binary classification quality)
+- **AUC-PR**: Area Under Precision-Recall Curve (handles class imbalance)
+- **EER**: Equal Error Rate (threshold where FPR = FNR)
+
+CHAD paper benchmarks: MPED-RNN achieves ~0.718 AUC-ROC averaged across cameras.
 
 ## Known Limitations
 
