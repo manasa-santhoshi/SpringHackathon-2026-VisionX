@@ -1,17 +1,21 @@
 """
 Parking Lot Analytics Dashboard.
 
-Two tabs:
-1. Vehicle Analytics — metrics from the detection/tracking pipeline (DLP)
-2. Anomaly Detection — multi-camera skeleton-based anomaly detection (CHAD)
+Three tabs:
+1. Live Demo — real-time YOLO inference on DLP video with live metrics
+2. Vehicle Analytics — metrics from the batch detection/tracking pipeline (DLP)
+3. Anomaly Detection — multi-camera skeleton-based anomaly detection (CHAD)
 
 Usage:
     streamlit run dashboard/app.py
 """
 
 import json
+import sys
+import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
@@ -66,10 +70,236 @@ st.set_page_config(page_title="Parking Analytics", page_icon="P", layout="wide")
 st.title("Parking Lot Analytics Dashboard")
 
 # --- Tabs ---
-tab_vehicle, tab_anomaly = st.tabs(["Vehicle Analytics", "Anomaly Detection"])
+tab_live, tab_vehicle, tab_anomaly = st.tabs(["Live Demo", "Vehicle Analytics", "Anomaly Detection"])
 
 # ============================================================
-# TAB 1: Vehicle Analytics (existing functionality)
+# TAB 1: Live Demo (real-time inference)
+# ============================================================
+with tab_live:
+    st.subheader("Real-Time Vehicle Detection & Tracking")
+
+    # --- Config sidebar (inside tab to avoid polluting other tabs) ---
+    DLP_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "DLP" / "raw"
+    DLP_JSON_DIR = PROJECT_ROOT / "data" / "raw" / "DLP" / "json"
+
+    # Find available videos
+    available_videos = sorted(DLP_RAW_DIR.glob("*.MOV")) if DLP_RAW_DIR.exists() else []
+
+    if not available_videos:
+        st.info(
+            "No DLP video files found. Place `.MOV` files in `data/raw/DLP/raw/`.\n\n"
+            "Download from the [DLP dataset site](https://sites.google.com/berkeley.edu/dlp-dataset)."
+        )
+    else:
+        # Controls
+        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
+        with ctrl_col1:
+            video_file = st.selectbox(
+                "Video",
+                available_videos,
+                format_func=lambda p: p.name,
+                key="live_video",
+            )
+        with ctrl_col2:
+            frame_skip = st.slider("Process every Nth frame", 1, 10, 3, key="live_skip")
+        with ctrl_col3:
+            model_path = st.text_input(
+                "Model",
+                value=str(PROJECT_ROOT / "models" / "yolo11n-visdrone" / "weights" / "bestVisDrone.pt"),
+                key="live_model",
+            )
+
+        # Session state
+        if "live_running" not in st.session_state:
+            st.session_state.live_running = False
+
+        start_col, stop_col, status_col = st.columns([1, 1, 2])
+        with start_col:
+            if st.button("Start", key="live_start", use_container_width=True):
+                st.session_state.live_running = True
+        with stop_col:
+            if st.button("Stop", key="live_stop", use_container_width=True):
+                st.session_state.live_running = False
+
+        st.markdown("---")
+
+        # Layout: video on left, metrics on right
+        video_col, metrics_col = st.columns([3, 2])
+
+        with video_col:
+            frame_placeholder = st.empty()
+            fps_placeholder = st.empty()
+            progress_placeholder = st.empty()
+
+        with metrics_col:
+            kpi_placeholder = st.empty()
+            occ_chart_placeholder = st.empty()
+            count_chart_placeholder = st.empty()
+            dwell_placeholder = st.empty()
+
+        # --- Run inference ---
+        if st.session_state.live_running and video_file:
+            # Lazy imports to avoid slowing tab load
+            sys.path.insert(0, str(PROJECT_ROOT / "dlp-dataset"))
+            from ultralytics import YOLO
+            from src.detection.yolo_detector import _detect_class_map
+            from src.pipeline.realtime import (
+                MetricsAccumulator,
+                draw_detections,
+                extract_detections_from_result,
+            )
+            from src.pipeline.homography import load_homography, compute_homography
+            from src.pipeline.run import get_parking_spaces
+
+            # Load homography
+            scene_name = video_file.stem
+            homography_cache = PROCESSED_DIR / scene_name / "homography.npy"
+            xml_path = DLP_RAW_DIR / f"{scene_name}_data.xml"
+
+            H = None
+            if homography_cache.exists():
+                H = load_homography(str(homography_cache))
+            elif xml_path.exists():
+                H = compute_homography(str(xml_path))
+
+            if H is None:
+                st.error("Cannot load homography. Ensure XML annotation exists.")
+                st.session_state.live_running = False
+            else:
+                # Load parking spaces and model
+                try:
+                    parking_spaces = get_parking_spaces()
+                except Exception as e:
+                    st.error(f"Cannot load parking spaces: {e}")
+                    st.session_state.live_running = False
+                    parking_spaces = None
+
+                if parking_spaces is not None:
+                    model = YOLO(model_path)
+                    vehicle_classes = _detect_class_map(model)
+                    accumulator = MetricsAccumulator(H, parking_spaces)
+
+                    cap = cv2.VideoCapture(str(video_file))
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+
+                    frame_idx = 0
+                    processed = 0
+
+                    while cap.isOpened() and st.session_state.live_running:
+                        ret, frame_bgr = cap.read()
+                        if not ret:
+                            break
+
+                        frame_idx += 1
+
+                        # Skip frames for performance
+                        if frame_idx % frame_skip != 0:
+                            continue
+
+                        t0 = time.time()
+                        timestamp = frame_idx / fps
+
+                        # Run YOLO tracking on single frame
+                        results = model.track(
+                            source=frame_bgr,
+                            persist=True,
+                            imgsz=1920,
+                            conf=0.25,
+                            classes=list(vehicle_classes.keys()),
+                            verbose=False,
+                        )
+
+                        # Extract detections
+                        det = extract_detections_from_result(
+                            results[0], frame_idx, timestamp, vehicle_classes
+                        )
+
+                        # Update metrics
+                        accumulator.add_frame(det)
+                        snapshot = accumulator.get_snapshot()
+
+                        # Draw and display frame
+                        annotated = draw_detections(frame_bgr, det, scale=0.5)
+                        frame_placeholder.image(annotated, channels="RGB")
+
+                        # FPS display
+                        proc_time = time.time() - t0
+                        current_fps = 1.0 / proc_time if proc_time > 0 else 0
+                        fps_placeholder.caption(
+                            f"Frame {frame_idx}/{total_frames} | "
+                            f"{current_fps:.1f} FPS | "
+                            f"Time: {timestamp:.1f}s"
+                        )
+                        progress_placeholder.progress(
+                            min(frame_idx / total_frames, 1.0)
+                        )
+
+                        # Update KPI cards
+                        vc = snapshot["vehicle_count"]
+                        occ = snapshot["occupancy"]
+                        dw = snapshot["dwell"]
+                        ee = snapshot["entry_exit"]
+
+                        with kpi_placeholder.container():
+                            k1, k2 = st.columns(2)
+                            with k1:
+                                st.metric("Unique Vehicles", vc["total_unique"])
+                                st.metric("In Frame", vc["current_frame_count"])
+                            with k2:
+                                occ_pct = round(
+                                    occ["current_occupied"] / occ["total_spaces"] * 100, 1
+                                ) if occ["total_spaces"] else 0
+                                st.metric(
+                                    "Occupancy",
+                                    f"{occ['current_occupied']}/{occ['total_spaces']}",
+                                    f"{occ_pct}%",
+                                )
+                                st.metric(
+                                    "Entries / Exits",
+                                    f"{ee['entry_count']} / {ee['exit_count']}",
+                                )
+
+                        # Update occupancy chart (every 5 processed frames)
+                        processed += 1
+                        if processed % 5 == 0 and occ["timestamps"]:
+                            fig_occ = go.Figure()
+                            fig_occ.add_trace(go.Scatter(
+                                x=occ["timestamps"],
+                                y=occ["occupied"],
+                                mode="lines",
+                                fill="tozeroy",
+                                fillcolor="rgba(255, 99, 71, 0.3)",
+                                line=dict(color="tomato"),
+                                name="Occupied",
+                            ))
+                            fig_occ.update_layout(
+                                title="Occupancy Over Time",
+                                xaxis_title="Time (s)",
+                                yaxis_title="Occupied Spots",
+                                height=250,
+                                margin=dict(t=30, b=30),
+                                showlegend=False,
+                            )
+                            occ_chart_placeholder.plotly_chart(
+                                fig_occ, use_container_width=True, key=f"occ_chart_{frame_idx}"
+                            )
+
+                        # Dwell info
+                        if dw["stats"]:
+                            dwell_placeholder.caption(
+                                f"Completed dwells: {dw['completed']} | "
+                                f"Active parked: {dw['active_parked']} | "
+                                f"Avg: {format_duration(dw['stats']['mean_sec'])}"
+                            )
+
+                    cap.release()
+                    st.session_state.live_running = False
+                    st.success("Video processing complete.")
+
+
+# ============================================================
+# TAB 2: Vehicle Analytics (existing functionality)
 # ============================================================
 with tab_vehicle:
     scenes = get_available_scenes()

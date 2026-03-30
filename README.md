@@ -115,7 +115,7 @@ python -m src.anomaly.evaluate --model-dir models/anomaly/cam_1_2_3_4
 
 ### Launch dashboard
 ```bash
-streamlit run dashboard/app.py
+PYTHONPATH=. streamlit run dashboard/app.py
 ```
 
 ## Model Choices
