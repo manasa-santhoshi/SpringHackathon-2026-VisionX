@@ -49,7 +49,10 @@ def load_detections(path: Path) -> list:
 
 
 def get_dets(frame: dict) -> list:
-    return frame.get("vehicles", frame.get("detections", []))
+    """Return all detections (vehicles + persons) from a frame."""
+    dets = frame.get("vehicles", frame.get("detections", []))
+    dets = dets + frame.get("persons", [])
+    return dets
 
 
 def is_person(det):

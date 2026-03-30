@@ -24,14 +24,19 @@ sys.path.insert(0, str(PROJECT_ROOT / "dlp-dataset"))
 from dlp.dataset import Dataset
 
 
+# DLP ground truth only has these VisDrone classes annotated
+DLP_EVAL_CLASSES = [3, 4, 8]  # car, van, bus
+
+
 def run_yolo_val(model_path: str, dataset_yaml: str) -> dict:
     """
     Run YOLO validation on the DLP test set.
 
+    Only evaluates on classes with ground truth labels (car, van, bus).
     Returns standard detection metrics (mAP50, mAP50-95, precision, recall).
     """
     model = YOLO(model_path)
-    results = model.val(data=dataset_yaml, split="test", verbose=True)
+    results = model.val(data=dataset_yaml, split="test", classes=DLP_EVAL_CLASSES, verbose=True)
 
     return {
         "mAP50": round(float(results.box.map50), 4),

@@ -22,14 +22,16 @@ VISDRONE_VEHICLE_CLASSES = {3: "car", 4: "van", 5: "truck", 8: "bus"}
 DLP_VEHICLE_CLASSES = {0: "car", 1: "medium vehicle", 2: "bus"}
 
 VISDRONE_PERSON_CLASSES = {0: "pedestrian", 1: "people"}
-VISDRONE_ALL_CLASSES = {**VISDRONE_PERSON_CLASSES, **VISDRONE_VEHICLE_CLASSES}
 
-def _detect_class_map(model: YOLO) -> dict[int, str]:
-    """Auto-detect whether the model uses COCO or VisDrone classes."""
+def _detect_class_maps(model: YOLO) -> tuple[dict[int, str], dict[int, str]]:
+    """Auto-detect whether the model uses COCO or VisDrone classes.
+
+    Returns (vehicle_classes, person_classes).
+    """
     names = model.names
     if names.get(3) == "car" and names.get(4) == "van":
-        return VISDRONE_ALL_CLASSES # ← include pedestrians for evaluation
-    return COCO_VEHICLE_CLASSES
+        return VISDRONE_VEHICLE_CLASSES, VISDRONE_PERSON_CLASSES
+    return COCO_VEHICLE_CLASSES, {}
 
 
 class YOLODetector(ParkingDetector):
@@ -43,10 +45,13 @@ class YOLODetector(ParkingDetector):
         super().__init__()
         self.model = YOLO(model_name)
         self.conf_threshold = conf_threshold
-        self.vehicle_classes = _detect_class_map(self.model)
+        self.vehicle_classes, self.person_classes = _detect_class_maps(self.model)
+        self._all_classes = {**self.vehicle_classes, **self.person_classes}
         class_source = "VisDrone" if self.vehicle_classes is VISDRONE_VEHICLE_CLASSES else "COCO"
         print(f"Loaded {model_name} with {class_source} classes")
-        print(f"classes: {self.vehicle_classes}")
+        print(f"Vehicle classes: {self.vehicle_classes}")
+        if self.person_classes:
+            print(f"Person classes: {self.person_classes}")
 
     def detect_and_track(
         self,
@@ -77,7 +82,7 @@ class YOLODetector(ParkingDetector):
             persist=True,
             imgsz=imgsz,
             conf=self.conf_threshold,
-            classes=list(self.vehicle_classes.keys()),
+            classes=list(self._all_classes.keys()),
             verbose=False,
         )
 
@@ -94,11 +99,12 @@ class YOLODetector(ParkingDetector):
             timestamp = frame_idx / fps_val
 
             vehicles = []
+            persons = []
             if result.boxes is not None and result.boxes.id is not None:
                 boxes = result.boxes
                 for i in range(len(boxes)):
                     cls_id = int(boxes.cls[i].item())
-                    if cls_id not in self.vehicle_classes:
+                    if cls_id not in self._all_classes:
                         continue
 
                     track_id = int(boxes.id[i].item())
@@ -107,21 +113,25 @@ class YOLODetector(ParkingDetector):
                     cx = (x1 + x2) / 2
                     cy = (y1 + y2) / 2
 
-                    vehicles.append(
-                        DetectedVehicle(
-                            track_id=track_id,
-                            bbox=(x1, y1, x2, y2),
-                            confidence=conf,
-                            class_name=self.vehicle_classes[cls_id],
-                            center_px=(cx, cy),
-                        )
+                    det = DetectedVehicle(
+                        track_id=track_id,
+                        bbox=(x1, y1, x2, y2),
+                        confidence=conf,
+                        class_name=self._all_classes[cls_id],
+                        center_px=(cx, cy),
                     )
+
+                    if cls_id in self.person_classes:
+                        persons.append(det)
+                    else:
+                        vehicles.append(det)
 
             all_detections.append(
                 FrameDetections(
                     frame_idx=frame_idx,
                     timestamp=timestamp,
                     vehicles=vehicles,
+                    persons=persons,
                 )
             )
 

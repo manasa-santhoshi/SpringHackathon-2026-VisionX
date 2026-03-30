@@ -3,7 +3,7 @@ CLI entry point for the parking analytics pipeline.
 
 Usage:
     python -m src.pipeline.run --video data/raw/DLP/raw/DJI_0012.MOV
-    python -m src.pipeline.run --video data/raw/DLP/raw/DJI_0012.MOV --model yolo11s.pt
+    python -m src.pipeline.run --video data/raw/DLP/raw/DJI_0012.MOV --model models/yolo11-visdrone/weights/bestVisDrone.pt
 """
 
 import argparse
@@ -52,7 +52,7 @@ def get_scene_name(video_path: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Parking lot analytics pipeline")
     parser.add_argument("--video", required=True, help="Path to the video file")
-    parser.add_argument("--model", default=str(PROJECT_ROOT / "models/yolo11n-visdrone/weights/best.pt"),
+    parser.add_argument("--model", default=str(PROJECT_ROOT / "models/yolo11n-visdrone/weights/bestVisDrone.pt"),
                         help="YOLO model path (default: VisDrone-finetuned model)")
     parser.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold")
     parser.add_argument("--imgsz", type=int, default=1920, help="Inference image size")
@@ -105,6 +105,16 @@ def main():
                 }
                 for v in frame.vehicles
             ],
+            "persons": [
+                {
+                    "track_id": p.track_id,
+                    "bbox": list(p.bbox),
+                    "confidence": p.confidence,
+                    "class_name": p.class_name,
+                    "center_px": list(p.center_px),
+                }
+                for p in frame.persons
+            ],
         })
     with open(output_dir / "detections.json", "w") as f:
         json.dump(detections_data, f)
@@ -113,7 +123,7 @@ def main():
     # --- Step 3: Compute metrics ---
     print("\nComputing metrics...")
 
-    # Metric 1: Vehicle count
+    # Metric 1: Vehicle count (vehicles only — persons excluded)
     vehicle_count = compute_vehicle_count(detections)
     with open(output_dir / "vehicle_count.json", "w") as f:
         json.dump(vehicle_count, f, indent=2)

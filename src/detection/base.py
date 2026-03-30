@@ -28,6 +28,7 @@ class FrameDetections:
     frame_idx: int
     timestamp: float  # seconds from video start
     vehicles: list[DetectedVehicle] = field(default_factory=list)
+    persons: list[DetectedVehicle] = field(default_factory=list)
 
 
 class ParkingDetector(nn.Module, ABC):
