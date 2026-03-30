@@ -52,8 +52,8 @@ def get_scene_name(video_path: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Parking lot analytics pipeline")
     parser.add_argument("--video", required=True, help="Path to the video file")
-    parser.add_argument("--model", default=str(PROJECT_ROOT / "models/yolo11n-dlp/weights/best.pt"),
-                        help="YOLO model path (default: DLP-finetuned model)")
+    parser.add_argument("--model", default=str(PROJECT_ROOT / "models/yolo11n-visdrone/weights/best.pt"),
+                        help="YOLO model path (default: VisDrone-finetuned model)")
     parser.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold")
     parser.add_argument("--imgsz", type=int, default=1920, help="Inference image size")
     parser.add_argument("--sample-interval", type=float, default=1.0,

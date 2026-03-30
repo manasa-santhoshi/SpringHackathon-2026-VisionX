@@ -1,16 +1,16 @@
 """
-Prepare DLP video + XML annotations as a YOLO training dataset.
+Prepare DLP video + XML annotations as a YOLO test dataset.
 
 Extracts frames from the video at a configurable stride, converts
-bounding boxes from the XML to YOLO format, and splits into train/val.
+bounding boxes from the XML to YOLO format using VisDrone-compatible class IDs.
+This test set is used to evaluate a VisDrone-trained model on DLP parking footage.
 
 Usage:
     python -m src.detection.prepare_dlp_dataset
-    python -m src.detection.prepare_dlp_dataset --stride 10 --val-ratio 0.2
+    python -m src.detection.prepare_dlp_dataset --stride 50
 """
 
 import argparse
-import random
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -20,36 +20,36 @@ from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Map DLP types to class IDs (exclude Pedestrian and Undefined)
-DLP_CLASSES = {"Car": 0, "Medium Vehicle": 1, "Bus": 2}
-CLASS_NAMES = {v: k for k, v in DLP_CLASSES.items()}
+# Map DLP vehicle types to VisDrone class IDs so model.val() works directly
+# VisDrone classes: 0=pedestrian, 1=people, 2=bicycle, 3=car, 4=van, 5=truck,
+#                   6=tricycle, 7=awning-tricycle, 8=bus, 9=motor
+DLP_TO_VISDRONE = {"Car": 3, "Medium Vehicle": 4, "Bus": 8}
+
+# Full VisDrone class names (needed for dataset.yaml)
+VISDRONE_NAMES = {
+    0: "pedestrian", 1: "people", 2: "bicycle", 3: "car", 4: "van",
+    5: "truck", 6: "tricycle", 7: "awning-tricycle", 8: "bus", 9: "motor",
+}
 
 
-def extract_dataset(
+def extract_test_set(
     video_path: str,
     xml_path: str,
     output_dir: str,
-    stride: int = 5,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
-    seed: int = 42,
+    stride: int = 25,
 ):
     """
-    Extract frames and YOLO labels from DLP video + XML.
+    Extract frames and YOLO labels from DLP video + XML as a test-only dataset.
 
     Args:
         video_path: Path to the .MOV video file.
         xml_path: Path to the _data.xml annotation file.
         output_dir: Output directory for the YOLO dataset.
-        stride: Extract every N-th frame (default 5 → ~2260 images from 11309 frames).
-        val_ratio: Fraction of frames for validation.
-        test_ratio: Fraction of frames for testing.
-        seed: Random seed for train/val/test split.
+        stride: Extract every N-th frame (default 25 → ~452 images at 1/sec from 11309 frames).
     """
     output = Path(output_dir)
-    for split in ("train", "val", "test"):
-        (output / "images" / split).mkdir(parents=True, exist_ok=True)
-        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+    (output / "images" / "test").mkdir(parents=True, exist_ok=True)
+    (output / "labels" / "test").mkdir(parents=True, exist_ok=True)
 
     # Parse XML
     print(f"Parsing {xml_path}...")
@@ -66,20 +66,8 @@ def extract_dataset(
     # Collect frame IDs to extract
     frame_elements = {int(f.get("id")): f for f in root.findall("frame")}
     frame_ids = sorted(fid for fid in frame_elements if fid % stride == 0)
-    print(f"Extracting {len(frame_ids)} frames (stride={stride})")
+    print(f"Extracting {len(frame_ids)} test frames (stride={stride})")
 
-    # Train/val/test split
-    random.seed(seed)
-    random.shuffle(frame_ids)
-    n_test = max(1, int(len(frame_ids) * test_ratio))
-    n_val = max(1, int(len(frame_ids) * val_ratio))
-    test_ids = set(frame_ids[:n_test])
-    val_ids = set(frame_ids[n_test:n_test + n_val])
-    train_ids = set(frame_ids[n_test + n_val:])
-    print(f"Train: {len(train_ids)}, Val: {len(val_ids)}, Test: {len(test_ids)}")
-
-    # Extract frames and labels
-    frame_idx = 0
     extracted = 0
 
     for frame_idx in tqdm(range(total_frames), desc="Extracting frames"):
@@ -90,27 +78,21 @@ def extract_dataset(
         if frame_idx not in frame_elements or frame_idx % stride != 0:
             continue
 
-        if frame_idx in test_ids:
-            split = "test"
-        elif frame_idx in val_ids:
-            split = "val"
-        else:
-            split = "train"
         img_name = f"frame_{frame_idx:06d}.jpg"
 
         # Save image
-        cv2.imwrite(str(output / "images" / split / img_name), frame)
+        cv2.imwrite(str(output / "images" / "test" / img_name), frame)
 
-        # Convert annotations to YOLO format
+        # Convert annotations to YOLO format with VisDrone class IDs
         label_lines = []
         frame_el = frame_elements[frame_idx]
 
         for traj in frame_el.findall("trajectory"):
             vtype = traj.get("type")
-            if vtype not in DLP_CLASSES:
+            if vtype not in DLP_TO_VISDRONE:
                 continue
 
-            cls_id = DLP_CLASSES[vtype]
+            cls_id = DLP_TO_VISDRONE[vtype]
 
             # Get bounding box from corners
             fl_x = float(traj.get("front_left_x"))
@@ -144,21 +126,19 @@ def extract_dataset(
 
         # Save label
         label_name = f"frame_{frame_idx:06d}.txt"
-        with open(output / "labels" / split / label_name, "w") as f:
+        with open(output / "labels" / "test" / label_name, "w") as f:
             f.write("\n".join(label_lines) + "\n" if label_lines else "")
 
         extracted += 1
 
     cap.release()
-    print(f"Extracted {extracted} frames")
+    print(f"Extracted {extracted} test frames")
 
-    # Write dataset YAML
+    # Write dataset YAML with VisDrone class names
     dataset_yaml = {
         "path": str(output.resolve()),
-        "train": "images/train",
-        "val": "images/val",
         "test": "images/test",
-        "names": {v: k for k, v in DLP_CLASSES.items()},
+        "names": VISDRONE_NAMES,
     }
     yaml_path = output / "dataset.yaml"
     with open(yaml_path, "w") as f:
@@ -169,23 +149,19 @@ def extract_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare DLP data for YOLO training")
+    parser = argparse.ArgumentParser(description="Prepare DLP test set for YOLO evaluation")
     parser.add_argument("--video", default=str(PROJECT_ROOT / "data/raw/DLP/raw/DJI_0012.MOV"))
     parser.add_argument("--xml", default=str(PROJECT_ROOT / "data/raw/DLP/raw/DJI_0012_data.xml"))
     parser.add_argument("--output", default=str(PROJECT_ROOT / "data/processed/dlp_yolo_dataset"))
-    parser.add_argument("--stride", type=int, default=5,
-                        help="Extract every N-th frame (default: 5)")
-    parser.add_argument("--val-ratio", type=float, default=0.15)
-    parser.add_argument("--test-ratio", type=float, default=0.15)
+    parser.add_argument("--stride", type=int, default=25,
+                        help="Extract every N-th frame (default: 25, ~1 per second)")
     args = parser.parse_args()
 
-    extract_dataset(
+    extract_test_set(
         video_path=args.video,
         xml_path=args.xml,
         output_dir=args.output,
         stride=args.stride,
-        val_ratio=args.val_ratio,
-        test_ratio=args.test_ratio,
     )
 
 

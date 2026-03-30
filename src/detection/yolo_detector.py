@@ -1,8 +1,8 @@
 """
 YOLOv11 vehicle detector with built-in ByteTrack tracking.
 
-Supports both COCO-pretrained and VisDrone-finetuned models.
-VisDrone models are required for drone/aerial parking footage.
+Supports COCO-pretrained and VisDrone-finetuned models.
+VisDrone-finetuned models are required for drone/aerial parking footage.
 """
 
 from pathlib import Path
@@ -15,20 +15,13 @@ from src.detection.base import DetectedVehicle, FrameDetections, ParkingDetector
 # COCO class IDs for vehicles
 COCO_VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
-# VisDrone class IDs for vehicles
+# VisDrone class IDs for vehicles (excludes pedestrian, people, bicycle, tricycle, awning-tricycle, motor)
 VISDRONE_VEHICLE_CLASSES = {3: "car", 4: "van", 5: "truck", 8: "bus"}
-
-# DLP class IDs (from prepare_dlp_dataset.py)
-DLP_VEHICLE_CLASSES = {0: "car", 1: "medium vehicle", 2: "bus"}
 
 
 def _detect_class_map(model: YOLO) -> dict[int, str]:
-    """Auto-detect whether the model uses COCO, VisDrone, or DLP classes."""
+    """Auto-detect whether the model uses COCO or VisDrone classes."""
     names = model.names
-    # DLP fine-tuned: 3 classes starting with Car
-    if names.get(0) == "Car" and names.get(1) == "Medium Vehicle":
-        return DLP_VEHICLE_CLASSES
-    # VisDrone: car at index 3, van at index 4
     if names.get(3) == "car" and names.get(4) == "van":
         return VISDRONE_VEHICLE_CLASSES
     return COCO_VEHICLE_CLASSES
