@@ -18,12 +18,17 @@ COCO_VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 # VisDrone class IDs for vehicles (excludes pedestrian, people, bicycle, tricycle, awning-tricycle, motor)
 VISDRONE_VEHICLE_CLASSES = {3: "car", 4: "van", 5: "truck", 8: "bus"}
 
+# DLP class IDs (from prepare_dlp_dataset.py)
+DLP_VEHICLE_CLASSES = {0: "car", 1: "medium vehicle", 2: "bus"}
+
+VISDRONE_PERSON_CLASSES = {0: "pedestrian", 1: "people"}
+VISDRONE_ALL_CLASSES = {**VISDRONE_PERSON_CLASSES, **VISDRONE_VEHICLE_CLASSES}
 
 def _detect_class_map(model: YOLO) -> dict[int, str]:
     """Auto-detect whether the model uses COCO or VisDrone classes."""
     names = model.names
     if names.get(3) == "car" and names.get(4) == "van":
-        return VISDRONE_VEHICLE_CLASSES
+        return VISDRONE_ALL_CLASSES # ← include pedestrians for evaluation
     return COCO_VEHICLE_CLASSES
 
 
@@ -41,7 +46,7 @@ class YOLODetector(ParkingDetector):
         self.vehicle_classes = _detect_class_map(self.model)
         class_source = "VisDrone" if self.vehicle_classes is VISDRONE_VEHICLE_CLASSES else "COCO"
         print(f"Loaded {model_name} with {class_source} classes")
-        print(f"  Vehicle classes: {self.vehicle_classes}")
+        print(f"classes: {self.vehicle_classes}")
 
     def detect_and_track(
         self,
