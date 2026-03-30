@@ -1,33 +1,59 @@
 """
-Evaluation module: compare YOLO detections against DLP ground truth.
+Evaluation module: test VisDrone-trained YOLO model on DLP parking lot data.
 
-Loads the DLP JSON ground truth for a scene and compares it with model detections
-to compute detection accuracy metrics.
+Two evaluation modes:
+1. YOLO val: Run model.val() on the DLP test set for standard mAP/precision/recall
+2. Pipeline eval: Compare pipeline detections vs DLP JSON ground truth for vehicle counts
 
 Usage:
     python -m src.evaluation.evaluate --scene DJI_0012
+    python -m src.evaluation.evaluate --scene DJI_0012 --model models/yolo11n-visdrone/weights/best.pt
 """
 
 import argparse
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from ultralytics import YOLO
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "dlp-dataset"))
 
 from dlp.dataset import Dataset
-from dlp.visualizer import Visualizer
 
-from src.pipeline.homography import load_homography, pixel_to_ground
+
+def run_yolo_val(model_path: str, dataset_yaml: str) -> dict:
+    """
+    Run YOLO validation on the DLP test set.
+
+    Returns standard detection metrics (mAP50, mAP50-95, precision, recall).
+    """
+    model = YOLO(model_path)
+    results = model.val(data=dataset_yaml, split="test", verbose=True)
+
+    return {
+        "mAP50": round(float(results.box.map50), 4),
+        "mAP50-95": round(float(results.box.map), 4),
+        "precision": round(float(results.box.mp), 4),
+        "recall": round(float(results.box.mr), 4),
+        "per_class": {
+            name: {
+                "mAP50": round(float(results.box.maps[i]), 4) if i < len(results.box.maps) else None,
+            }
+            for i, name in enumerate(results.names.values())
+            if i < len(results.box.maps)
+        },
+    }
 
 
 def load_detections(processed_dir: Path) -> list[dict]:
-    """Load saved detections from JSON."""
-    with open(processed_dir / "detections.json") as f:
+    """Load saved pipeline detections from JSON."""
+    det_path = processed_dir / "detections.json"
+    if not det_path.exists():
+        return []
+    with open(det_path) as f:
         return json.load(f)
 
 
@@ -40,13 +66,9 @@ def load_ground_truth(scene_name: str) -> tuple[Dataset, str]:
     return ds, scene_token
 
 
-def count_gt_vehicles_per_frame(
-    ds: Dataset, scene_token: str
-) -> dict[int, int]:
+def count_gt_vehicles_per_frame(ds: Dataset, scene_token: str) -> dict[int, int]:
     """
     Count ground-truth vehicles (non-pedestrian agents + obstacles) visible per frame.
-
-    Returns dict mapping frame_index → vehicle count.
     """
     scene = ds.get("scene", scene_token)
     n_obstacles = len(scene["obstacles"])
@@ -57,7 +79,6 @@ def count_gt_vehicles_per_frame(
 
     while frame_token:
         frame = ds.get("frame", frame_token)
-        # Count non-pedestrian instances in this frame
         n_agents = 0
         for inst_token in frame["instances"]:
             inst = ds.get("instance", inst_token)
@@ -75,11 +96,7 @@ def count_gt_vehicles_per_frame(
 def evaluate_vehicle_count(
     detections: list[dict], gt_frame_counts: dict[int, int], sample_interval: int = 25
 ) -> dict:
-    """
-    Compare detected vehicle count vs ground truth per frame (sampled).
-
-    Returns per-frame comparison and aggregate error metrics.
-    """
+    """Compare detected vehicle count vs ground truth per frame (sampled)."""
     comparisons = []
     errors = []
 
@@ -119,7 +136,6 @@ def evaluate_unique_count(detections: list[dict], ds: Dataset, scene_token: str)
     """Compare total unique vehicles detected vs ground truth."""
     scene = ds.get("scene", scene_token)
 
-    # GT: count non-pedestrian agents + obstacles
     gt_agents = 0
     for agent_token in scene["agents"]:
         agent = ds.get("agent", agent_token)
@@ -128,7 +144,6 @@ def evaluate_unique_count(detections: list[dict], ds: Dataset, scene_token: str)
     gt_obstacles = len(scene["obstacles"])
     gt_total = gt_agents + gt_obstacles
 
-    # Detected: unique track IDs
     detected_tracks = set()
     for frame in detections:
         for v in frame["vehicles"]:
@@ -143,48 +158,63 @@ def evaluate_unique_count(detections: list[dict], ds: Dataset, scene_token: str)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate detections against ground truth")
+    parser = argparse.ArgumentParser(description="Evaluate model on DLP data")
     parser.add_argument("--scene", default="DJI_0012", help="Scene name (default: DJI_0012)")
+    parser.add_argument("--model", default=str(PROJECT_ROOT / "models/yolo11n-visdrone/weights/best.pt"),
+                        help="Model path for YOLO val")
     args = parser.parse_args()
 
     processed_dir = PROJECT_ROOT / "data" / "processed" / args.scene
+    dataset_yaml = PROJECT_ROOT / "data" / "processed" / "dlp_yolo_dataset" / "dataset.yaml"
 
-    if not (processed_dir / "detections.json").exists():
-        print(f"No detections found at {processed_dir}/detections.json")
-        print("Run the pipeline first: python -m src.pipeline.run --video ...")
-        sys.exit(1)
+    results = {"scene": args.scene}
 
-    print(f"Evaluating {args.scene}...")
+    # --- YOLO val on DLP test set ---
+    if dataset_yaml.exists() and Path(args.model).exists():
+        print("=== YOLO Validation on DLP Test Set ===")
+        yolo_metrics = run_yolo_val(args.model, str(dataset_yaml))
+        results["yolo_val"] = yolo_metrics
+        print(f"  mAP50:      {yolo_metrics['mAP50']}")
+        print(f"  mAP50-95:   {yolo_metrics['mAP50-95']}")
+        print(f"  Precision:  {yolo_metrics['precision']}")
+        print(f"  Recall:     {yolo_metrics['recall']}")
+    else:
+        if not Path(args.model).exists():
+            print(f"Model not found at {args.model}")
+            print("Train first: python -m src.detection.train")
+        if not dataset_yaml.exists():
+            print(f"DLP test set not found at {dataset_yaml}")
+            print("Prepare first: python -m src.detection.prepare_dlp_dataset")
 
-    # Load data
+    # --- Pipeline detection comparison ---
     detections = load_detections(processed_dir)
-    ds, scene_token = load_ground_truth(args.scene)
+    if detections:
+        print("\n=== Pipeline Detection vs Ground Truth ===")
+        ds, scene_token = load_ground_truth(args.scene)
 
-    # Evaluation 1: Unique vehicle count
-    print("\n--- Unique Vehicle Count ---")
-    unique_eval = evaluate_unique_count(detections, ds, scene_token)
-    print(f"  Detected unique tracks: {unique_eval['detected_unique']}")
-    print(f"  GT moving vehicles:     {unique_eval['gt_moving_vehicles']}")
-    print(f"  GT static obstacles:    {unique_eval['gt_static_obstacles']}")
-    print(f"  GT total:               {unique_eval['gt_total']}")
+        # Unique vehicle count
+        unique_eval = evaluate_unique_count(detections, ds, scene_token)
+        results["unique_count"] = unique_eval
+        print(f"  Detected unique tracks: {unique_eval['detected_unique']}")
+        print(f"  GT total:               {unique_eval['gt_total']} "
+              f"({unique_eval['gt_moving_vehicles']} moving + {unique_eval['gt_static_obstacles']} static)")
 
-    # Evaluation 2: Per-frame vehicle count
-    print("\n--- Per-Frame Vehicle Count (sampled) ---")
-    gt_frame_counts = count_gt_vehicles_per_frame(ds, scene_token)
-    frame_eval = evaluate_vehicle_count(detections, gt_frame_counts)
-    if frame_eval["stats"]:
-        s = frame_eval["stats"]
-        print(f"  MAE:       {s['mae']}")
-        print(f"  Median AE: {s['median_ae']}")
-        print(f"  Max AE:    {s['max_ae']}")
-        print(f"  Samples:   {s['n_samples']}")
+        # Per-frame vehicle count
+        gt_frame_counts = count_gt_vehicles_per_frame(ds, scene_token)
+        frame_eval = evaluate_vehicle_count(detections, gt_frame_counts)
+        results["frame_count"] = frame_eval
+        if frame_eval["stats"]:
+            s = frame_eval["stats"]
+            print(f"  MAE:       {s['mae']}")
+            print(f"  Median AE: {s['median_ae']}")
+            print(f"  Max AE:    {s['max_ae']}")
+            print(f"  Samples:   {s['n_samples']}")
+    else:
+        print("\nNo pipeline detections found. Run the pipeline first:")
+        print("  python -m src.pipeline.run --video data/raw/DLP/raw/DJI_0012.MOV")
 
-    # Save evaluation results
-    results = {
-        "scene": args.scene,
-        "unique_count": unique_eval,
-        "frame_count": frame_eval,
-    }
+    # Save results
+    processed_dir.mkdir(parents=True, exist_ok=True)
     output_path = processed_dir / "evaluation.json"
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
