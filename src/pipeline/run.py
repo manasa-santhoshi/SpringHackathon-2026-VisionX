@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--grid", nargs=2, type=int, default=[4, 4],
                         metavar=("COLS", "ROWS"),
                         help="Grid divisions for PSI metric (default: 4 4)")
+    parser.add_argument("--skip-detection", action="store_true",
+                        help="Skip detection, reuse existing detections.json")
     args = parser.parse_args()
 
     video_path = Path(args.video).resolve()
@@ -89,41 +91,77 @@ def main():
         H = None
 
     # --- Step 2: Detection + Tracking ---
-    print(f"\nRunning YOLOv11 detection + tracking on {video_path}")
-    detector = YOLODetector(model_name=args.model, conf_threshold=args.conf)
-    detections = detector.detect_and_track(str(video_path), imgsz=args.imgsz)
-    print(f"Processed {len(detections)} frames")
+    detections_path = output_dir / "detections.json"
 
-    # Save raw detections for reuse
-    detections_data = []
-    for frame in detections:
-        detections_data.append({
-            "frame_idx": frame.frame_idx,
-            "timestamp": frame.timestamp,
-            "vehicles": [
-                {
-                    "track_id": v.track_id,
-                    "bbox": list(v.bbox),
-                    "confidence": v.confidence,
-                    "class_name": v.class_name,
-                    "center_px": list(v.center_px),
-                }
-                for v in frame.vehicles
-            ],
-            "persons": [
-                {
-                    "track_id": p.track_id,
-                    "bbox": list(p.bbox),
-                    "confidence": p.confidence,
-                    "class_name": p.class_name,
-                    "center_px": list(p.center_px),
-                }
-                for p in frame.persons
-            ],
-        })
-    with open(output_dir / "detections.json", "w") as f:
-        json.dump(detections_data, f)
-    print(f"Saved detections to {output_dir / 'detections.json'}")
+    if args.skip_detection:
+        if not detections_path.exists():
+            print(f"ERROR: --skip-detection but {detections_path} not found.")
+            print("Run without --skip-detection first.")
+            sys.exit(1)
+        print(f"Loading cached detections from {detections_path}")
+        with open(detections_path) as f:
+            detections_data = json.load(f)
+        # Rebuild FrameDetections from serialized data
+        from src.detection.base import DetectedVehicle, FrameDetections
+        detections = []
+        for fd in detections_data:
+            vehicles = [
+                DetectedVehicle(
+                    track_id=v["track_id"], bbox=tuple(v["bbox"]),
+                    confidence=v["confidence"], class_name=v["class_name"],
+                    center_px=tuple(v["center_px"]),
+                )
+                for v in fd.get("vehicles", [])
+            ]
+            persons = [
+                DetectedVehicle(
+                    track_id=p["track_id"], bbox=tuple(p["bbox"]),
+                    confidence=p["confidence"], class_name=p["class_name"],
+                    center_px=tuple(p["center_px"]),
+                )
+                for p in fd.get("persons", [])
+            ]
+            detections.append(FrameDetections(
+                frame_idx=fd["frame_idx"], timestamp=fd["timestamp"],
+                vehicles=vehicles, persons=persons,
+            ))
+        print(f"Loaded {len(detections)} frames from cache")
+    else:
+        print(f"\nRunning YOLOv11 detection + tracking on {video_path}")
+        detector = YOLODetector(model_name=args.model, conf_threshold=args.conf)
+        detections = detector.detect_and_track(str(video_path), imgsz=args.imgsz)
+        print(f"Processed {len(detections)} frames")
+
+        # Save raw detections for reuse
+        detections_data = []
+        for frame in detections:
+            detections_data.append({
+                "frame_idx": frame.frame_idx,
+                "timestamp": frame.timestamp,
+                "vehicles": [
+                    {
+                        "track_id": v.track_id,
+                        "bbox": list(v.bbox),
+                        "confidence": v.confidence,
+                        "class_name": v.class_name,
+                        "center_px": list(v.center_px),
+                    }
+                    for v in frame.vehicles
+                ],
+                "persons": [
+                    {
+                        "track_id": p.track_id,
+                        "bbox": list(p.bbox),
+                        "confidence": p.confidence,
+                        "class_name": p.class_name,
+                        "center_px": list(p.center_px),
+                    }
+                    for p in frame.persons
+                ],
+            })
+        with open(detections_path, "w") as f:
+            json.dump(detections_data, f)
+        print(f"Saved detections to {detections_path}")
 
     # --- Step 3: Compute metrics ---
     print("\nComputing metrics...")

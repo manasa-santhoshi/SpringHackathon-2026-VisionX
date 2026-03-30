@@ -35,6 +35,37 @@ def _point_in_rect(
     return min_x <= px <= max_x and min_y <= py <= max_y
 
 
+class _ParkingSpaceLookup:
+    """Precomputed numpy arrays for fast point-in-rect parking space lookup."""
+
+    def __init__(self, parking_spaces: pd.DataFrame):
+        corners = parking_spaces.iloc[:, 2:10].to_numpy(dtype=np.float64)
+        xs = corners[:, [0, 2, 4, 6]]
+        ys = corners[:, [1, 3, 5, 7]]
+        self.min_x = xs.min(axis=1)
+        self.max_x = xs.max(axis=1)
+        self.min_y = ys.min(axis=1)
+        self.max_y = ys.max(axis=1)
+        self.areas = parking_spaces["area"].to_numpy()
+        self.ids = parking_spaces["id"].to_numpy()
+
+    def find_space(self, gx: float, gy: float) -> str | None:
+        """Return the area label if (gx, gy) falls inside a parking space."""
+        mask = (gx >= self.min_x) & (gx <= self.max_x) & (gy >= self.min_y) & (gy <= self.max_y)
+        idx = np.argmax(mask)
+        if mask[idx]:
+            return str(self.areas[idx])
+        return None
+
+    def find_space_id(self, gx: float, gy: float) -> tuple[str | None, str | None]:
+        """Return (space_id, area) if point is in a space, else (None, None)."""
+        mask = (gx >= self.min_x) & (gx <= self.max_x) & (gy >= self.min_y) & (gy <= self.max_y)
+        idx = np.argmax(mask)
+        if mask[idx]:
+            return self.ids[idx], str(self.areas[idx])
+        return None, None
+
+
 def _find_parking_space(
     gx: float, gy: float, parking_spaces: pd.DataFrame
 ) -> str | None:
@@ -92,6 +123,7 @@ def compute_occupancy_timeline(
     total_spaces = len(parking_spaces)
     # Precompute per-area space counts
     area_totals = parking_spaces.groupby("area").size().to_dict()
+    lookup = _ParkingSpaceLookup(parking_spaces)
 
     timestamps = []
     occupied_counts = []
@@ -111,14 +143,10 @@ def compute_occupancy_timeline(
 
         for v in frame.vehicles:
             gx, gy = pixel_to_ground(H, v.center_px[0], v.center_px[1])
-            for _, row in parking_spaces.iterrows():
-                corners = row.iloc[2:10].to_numpy()
-                if _point_in_rect(gx, gy, corners):
-                    space_id = row["id"]
-                    if space_id not in occupied_spaces:
-                        occupied_spaces.add(space_id)
-                        area_occupied[row["area"]] += 1
-                    break  # vehicle can only be in one space
+            space_id, area = lookup.find_space_id(gx, gy)
+            if space_id is not None and space_id not in occupied_spaces:
+                occupied_spaces.add(space_id)
+                area_occupied[area] += 1
 
         n_occupied = len(occupied_spaces)
         timestamps.append(round(frame.timestamp, 2))
@@ -152,6 +180,7 @@ def compute_dwell_times(
     """
     # Build per-track timeline: list of (timestamp, ground_x, ground_y)
     track_timeline: dict[int, list[tuple[float, float, float]]] = defaultdict(list)
+    lookup = _ParkingSpaceLookup(parking_spaces)
 
     for frame in detections:
         for v in frame.vehicles:
@@ -170,7 +199,7 @@ def compute_dwell_times(
         parked_area = None
 
         for ts, gx, gy in timeline:
-            area = _find_parking_space(gx, gy, parking_spaces)
+            area = lookup.find_space(gx, gy)
             if area is not None:
                 if parked_start is None:
                     parked_start = ts

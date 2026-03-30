@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.detection.base import DetectedVehicle, FrameDetections
 from src.pipeline.homography import pixel_to_ground
-from src.pipeline.metrics import _find_parking_space, _point_in_rect
+from src.pipeline.metrics import _ParkingSpaceLookup, _find_parking_space, _point_in_rect
 
 # Entrance zone bounds (from parking_map.yml WAYPOINTS.EXT area)
 ENTRANCE_X_MIN, ENTRANCE_X_MAX = 0.0, 30.0
@@ -49,6 +49,7 @@ class MetricsAccumulator:
         self.sample_interval = sample_interval
         self.total_spaces = len(parking_spaces)
         self.area_totals = parking_spaces.groupby("area").size().to_dict()
+        self._lookup = _ParkingSpaceLookup(parking_spaces)
 
         # Vehicle count state
         self.all_tracks: set[int] = set()
@@ -130,11 +131,9 @@ class MetricsAccumulator:
 
             for v in frame.vehicles:
                 gx, gy = pixel_to_ground(self.H, v.center_px[0], v.center_px[1])
-                for _, row in self.parking_spaces.iterrows():
-                    corners = row.iloc[2:10].to_numpy()
-                    if _point_in_rect(gx, gy, corners):
-                        occupied_spaces.add(row["id"])
-                        break
+                space_id, _ = self._lookup.find_space_id(gx, gy)
+                if space_id is not None:
+                    occupied_spaces.add(space_id)
 
             n_occupied = len(occupied_spaces)
             self.occ_timestamps.append(round(frame.timestamp, 2))
@@ -162,7 +161,7 @@ class MetricsAccumulator:
         parked_area = None
 
         for ts, gx, gy in timeline:
-            area = _find_parking_space(gx, gy, self.parking_spaces)
+            area = self._lookup.find_space(gx, gy)
             if area is not None:
                 if parked_start is None:
                     parked_start = ts
@@ -220,7 +219,7 @@ class MetricsAccumulator:
         for tid, timeline in self.active_tracks.items():
             if timeline:
                 _, gx, gy = timeline[-1]
-                if _find_parking_space(gx, gy, self.parking_spaces) is not None:
+                if self._lookup.find_space(gx, gy) is not None:
                     active_parked += 1
 
         return {

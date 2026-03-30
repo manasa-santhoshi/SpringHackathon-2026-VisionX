@@ -71,8 +71,9 @@ st.set_page_config(page_title="Parking Analytics", page_icon="P", layout="wide")
 st.title("Parking Lot Analytics Dashboard")
 
 # --- Tabs ---
-tab_live, tab_vehicle, tab_pedestrian, tab_anomaly = st.tabs(
-    ["Live Demo", "Vehicle Analytics", "Pedestrian Analytics", "Anomaly Detection"]
+tab_live, tab_vehicle, tab_pedestrian, tab_anomaly_live, tab_anomaly = st.tabs(
+    ["Live Demo", "Vehicle Analytics", "Pedestrian Analytics",
+     "Anomaly Demo", "Anomaly Detection"]
 )
 
 # ============================================================
@@ -658,7 +659,255 @@ with tab_pedestrian:
 
 
 # ============================================================
-# TAB 4: Anomaly Detection (CHAD multi-camera)
+# TAB 4: Anomaly Demo (real-time CHAD skeleton inference)
+# ============================================================
+with tab_anomaly_live:
+    st.subheader("Real-Time Behavior Anomaly Detection")
+    st.caption(
+        "Plays a CHAD surveillance video while running skeleton-based anomaly detection "
+        "frame-by-frame. Alerts are triggered when the anomaly score crosses the threshold."
+    )
+
+    # Check for trained model
+    anomaly_model_dirs = []
+    if MODELS_DIR.exists():
+        anomaly_model_dirs = sorted(
+            d.name for d in MODELS_DIR.iterdir()
+            if d.is_dir() and (d / "best_model.pt").exists()
+        )
+
+    CHAD_META_DIR = PROJECT_ROOT / "data" / "raw" / "CHAD" / "CHAD_Meta"
+    CHAD_VIDEO_DIR = PROJECT_ROOT / "data" / "raw" / "CHAD" / "CHAD_Videos"
+
+    if not anomaly_model_dirs:
+        st.info(
+            "No trained anomaly model found. Train first:\n\n"
+            "```\npython -m src.anomaly.train --data-root data/raw/CHAD/CHAD_Meta\n```"
+        )
+    elif not CHAD_META_DIR.exists():
+        st.info("CHAD dataset not found. Place it in `data/raw/CHAD/CHAD_Meta/`.")
+    else:
+        # Controls
+        anom_ctrl1, anom_ctrl2, anom_ctrl3 = st.columns([2, 2, 1])
+
+        with anom_ctrl1:
+            anom_model_name = st.selectbox(
+                "Model", anomaly_model_dirs, key="anom_live_model"
+            )
+
+        # Find available videos (with both .pkl and .npy)
+        ann_dir = CHAD_META_DIR / "annotations"
+        label_dir = CHAD_META_DIR / "anomaly_labels"
+        available_chad = sorted(
+            p.stem for p in ann_dir.glob("*.pkl")
+            if (label_dir / f"{p.stem}.npy").exists()
+        )
+
+        # Filter to those with video files
+        available_with_video = [
+            v for v in available_chad
+            if (CHAD_VIDEO_DIR / f"{v}.mp4").exists()
+        ]
+
+        if not available_with_video:
+            st.warning(
+                "No CHAD videos with matching annotations found. "
+                "Ensure `.mp4` files are in `data/raw/CHAD/CHAD_Videos/`."
+            )
+        else:
+            with anom_ctrl2:
+                chad_video_stem = st.selectbox(
+                    "Video",
+                    available_with_video,
+                    key="anom_live_video",
+                )
+
+            with anom_ctrl3:
+                anom_frame_skip = st.slider(
+                    "Frame skip", 1, 5, 1, key="anom_live_skip"
+                )
+
+            # Session state
+            if "anom_running" not in st.session_state:
+                st.session_state.anom_running = False
+
+            start_c, stop_c, _ = st.columns([1, 1, 3])
+            with start_c:
+                if st.button("Start", key="anom_start", use_container_width=True):
+                    st.session_state.anom_running = True
+            with stop_c:
+                if st.button("Stop", key="anom_stop", use_container_width=True):
+                    st.session_state.anom_running = False
+
+            st.markdown("---")
+
+            # Layout: video left, metrics right
+            vid_col, score_col = st.columns([3, 2])
+
+            with vid_col:
+                anom_frame_ph = st.empty()
+                anom_progress_ph = st.empty()
+
+            with score_col:
+                anom_kpi_ph = st.empty()
+                anom_chart_ph = st.empty()
+                anom_alert_ph = st.empty()
+
+            # --- Run inference ---
+            if st.session_state.anom_running and chad_video_stem:
+                import cv2
+                import time
+                from src.anomaly.realtime import RealtimeAnomalyDetector
+
+                model_path = str(MODELS_DIR / anom_model_name)
+                detector = RealtimeAnomalyDetector(
+                    model_dir=model_path,
+                    data_root=str(CHAD_META_DIR),
+                )
+                detector.load_video(chad_video_stem)
+
+                video_path = CHAD_VIDEO_DIR / f"{chad_video_stem}.mp4"
+                cap = cv2.VideoCapture(str(video_path))
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+                frame_idx = 0
+                alert_count = 0
+                processed = 0
+
+                while cap.isOpened() and st.session_state.anom_running:
+                    ret, frame_bgr = cap.read()
+                    if not ret:
+                        break
+
+                    if frame_idx % anom_frame_skip != 0:
+                        frame_idx += 1
+                        continue
+
+                    t0 = time.time()
+
+                    # Run anomaly detection on this frame
+                    result = detector.process_frame(frame_idx)
+
+                    # Draw frame with anomaly overlay
+                    display = frame_bgr.copy()
+                    h_frame, w_frame = display.shape[:2]
+
+                    # Color border based on anomaly
+                    if result.is_anomaly:
+                        alert_count += 1
+                        # Red border
+                        cv2.rectangle(display, (0, 0), (w_frame - 1, h_frame - 1), (0, 0, 255), 6)
+                        cv2.putText(
+                            display, "ANOMALY DETECTED",
+                            (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3,
+                        )
+                    elif result.gt_label == 1:
+                        # Orange border for GT anomaly but model didn't flag
+                        cv2.rectangle(display, (0, 0), (w_frame - 1, h_frame - 1), (0, 165, 255), 4)
+
+                    # Score overlay
+                    score_text = f"Score: {result.max_score:.4f} | Thr: {detector.threshold:.4f}"
+                    cv2.putText(
+                        display, score_text,
+                        (10, h_frame - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+                    )
+
+                    # Person count
+                    cv2.putText(
+                        display, f"Persons: {result.num_persons}",
+                        (10, h_frame - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1,
+                    )
+
+                    # Resize and display
+                    scale = 0.6
+                    display = cv2.resize(display, (int(w_frame * scale), int(h_frame * scale)))
+                    display_rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+                    anom_frame_ph.image(display_rgb)
+
+                    anom_progress_ph.progress(
+                        min(frame_idx / max(total_frames, 1), 1.0),
+                        text=f"Frame {frame_idx}/{total_frames} | "
+                             f"{1.0 / max(time.time() - t0, 0.001):.1f} FPS",
+                    )
+
+                    # Update KPIs
+                    with anom_kpi_ph.container():
+                        ak1, ak2 = st.columns(2)
+                        with ak1:
+                            st.metric("Current Score", f"{result.max_score:.4f}")
+                            st.metric("Persons in Frame", result.num_persons)
+                        with ak2:
+                            st.metric("Alerts Triggered", alert_count)
+                            gt_text = "Anomalous" if result.gt_label == 1 else "Normal"
+                            st.metric("Ground Truth", gt_text)
+
+                    # Update score timeline chart (every 5 processed frames)
+                    processed += 1
+                    if processed % 5 == 0 and detector.score_timeline:
+                        tl = detector.score_timeline
+                        step_tl = max(1, len(tl) // 300)
+                        sampled_scores = tl[::step_tl]
+                        sampled_gt = detector.gt_timeline[::step_tl]
+
+                        fig_score = go.Figure()
+                        x_vals = list(range(0, len(tl), step_tl))
+
+                        fig_score.add_trace(go.Scatter(
+                            x=x_vals, y=sampled_scores,
+                            mode="lines", name="Anomaly Score",
+                            line=dict(color="steelblue", width=1.5),
+                        ))
+
+                        # Threshold line
+                        fig_score.add_hline(
+                            y=detector.threshold,
+                            line_dash="dash", line_color="red",
+                            annotation_text="Threshold",
+                            annotation_position="top right",
+                        )
+
+                        # Highlight GT anomaly regions
+                        gt_x = [x for x, g in zip(x_vals, sampled_gt) if g == 1]
+                        gt_y = [s for s, g in zip(sampled_scores, sampled_gt) if g == 1]
+                        if gt_x:
+                            fig_score.add_trace(go.Scatter(
+                                x=gt_x, y=gt_y,
+                                mode="markers", name="GT Anomaly",
+                                marker=dict(color="red", size=3, opacity=0.5),
+                            ))
+
+                        fig_score.update_layout(
+                            xaxis_title="Frame",
+                            yaxis_title="Score",
+                            height=250,
+                            margin=dict(t=10, b=30),
+                            legend=dict(font=dict(size=9)),
+                        )
+                        anom_chart_ph.plotly_chart(
+                            fig_score, use_container_width=True,
+                            key=f"anom_chart_{frame_idx}",
+                        )
+
+                    # Alert panel
+                    if result.is_anomaly:
+                        anom_alert_ph.error(
+                            f"ALERT: Anomaly detected at frame {frame_idx} "
+                            f"(score {result.max_score:.4f} > threshold {detector.threshold:.4f})"
+                        )
+
+                    frame_idx += 1
+
+                cap.release()
+                st.session_state.anom_running = False
+                st.success(
+                    f"Video complete. {alert_count} anomaly alerts triggered "
+                    f"across {frame_idx} frames."
+                )
+
+
+# ============================================================
+# TAB 5: Anomaly Detection (CHAD multi-camera)
 # ============================================================
 with tab_anomaly:
     models = get_available_anomaly_models()
