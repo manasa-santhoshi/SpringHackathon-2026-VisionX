@@ -321,6 +321,8 @@ with tab_vehicle:
         occupancy = load_json(scene_dir / "occupancy_timeline.json")
         dwell = load_json(scene_dir / "dwell_times.json")
         entry_exit = load_json(scene_dir / "entry_exit.json")
+        baseline_occupancy = load_json(scene_dir / "baseline_occupancy.json")
+        gt_occupancy = load_json(scene_dir / "gt_occupancy.json")
 
         # --- Row 1: KPI Cards ---
         st.markdown("---")
@@ -360,7 +362,19 @@ with tab_vehicle:
             st.markdown("---")
             st.subheader("Occupancy Over Time")
 
-            show_areas = st.checkbox("Show by area", value=False)
+            occ_opt1, occ_opt2, occ_opt3 = st.columns(3)
+            with occ_opt1:
+                show_areas = st.checkbox("Show by area", value=False)
+            with occ_opt2:
+                show_baseline = st.checkbox(
+                    "Show baseline (frame-diff)", value=False,
+                    disabled=baseline_occupancy is None,
+                )
+            with occ_opt3:
+                show_gt = st.checkbox(
+                    "Show ground truth", value=False,
+                    disabled=gt_occupancy is None,
+                )
 
             if show_areas and occupancy.get("by_area"):
                 fig = go.Figure()
@@ -401,6 +415,24 @@ with tab_vehicle:
                     yaxis_title="Parking Spots",
                     height=400,
                 )
+
+            if show_gt and gt_occupancy:
+                fig.add_trace(go.Scatter(
+                    x=gt_occupancy["timestamps"],
+                    y=gt_occupancy["occupied"],
+                    mode="lines",
+                    name="Ground Truth",
+                    line=dict(color="gold", width=2),
+                ))
+
+            if show_baseline and baseline_occupancy:
+                fig.add_trace(go.Scatter(
+                    x=baseline_occupancy["timestamps"],
+                    y=baseline_occupancy["occupied"],
+                    mode="lines",
+                    name="Baseline (frame-diff)",
+                    line=dict(color="gray", dash="dash"),
+                ))
 
             st.plotly_chart(fig, use_container_width=True)
 
