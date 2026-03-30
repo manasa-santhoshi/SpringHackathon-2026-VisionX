@@ -1,10 +1,11 @@
 """
 Parking Lot Analytics Dashboard.
 
-Three tabs:
+Four tabs:
 1. Live Demo — real-time YOLO inference on DLP video with live metrics
 2. Vehicle Analytics — metrics from the batch detection/tracking pipeline (DLP)
-3. Anomaly Detection — multi-camera skeleton-based anomaly detection (CHAD)
+3. Pedestrian Analytics — person counting and Parking Stress Index (PSI)
+4. Anomaly Detection — multi-camera skeleton-based anomaly detection (CHAD)
 
 Usage:
     streamlit run dashboard/app.py
@@ -70,7 +71,9 @@ st.set_page_config(page_title="Parking Analytics", page_icon="P", layout="wide")
 st.title("Parking Lot Analytics Dashboard")
 
 # --- Tabs ---
-tab_live, tab_vehicle, tab_anomaly = st.tabs(["Live Demo", "Vehicle Analytics", "Anomaly Detection"])
+tab_live, tab_vehicle, tab_pedestrian, tab_anomaly = st.tabs(
+    ["Live Demo", "Vehicle Analytics", "Pedestrian Analytics", "Anomaly Detection"]
+)
 
 # ============================================================
 # TAB 1: Live Demo (real-time inference)
@@ -513,7 +516,149 @@ with tab_vehicle:
 
 
 # ============================================================
-# TAB 2: Anomaly Detection (CHAD multi-camera)
+# TAB 3: Pedestrian Analytics (person counting + PSI)
+# ============================================================
+with tab_pedestrian:
+    ped_scenes = get_available_scenes()
+    if not ped_scenes:
+        st.info(
+            "No processed data found. Run the pipeline first:\n\n"
+            "```\npython -m src.pipeline.run --video data/raw/DLP/raw/DJI_0012.MOV\n```"
+        )
+    else:
+        ped_scene = st.selectbox("Scene", ped_scenes, key="ped_scene")
+        ped_scene_dir = PROCESSED_DIR / ped_scene
+
+        person_count = load_json(ped_scene_dir / "person_count.json")
+        psi_data = load_json(ped_scene_dir / "psi.json")
+
+        if not person_count and not psi_data:
+            st.info(
+                "No pedestrian metrics found for this scene. "
+                "Re-run the pipeline to generate them:\n\n"
+                "```\npython -m src.pipeline.run --video data/raw/DLP/raw/"
+                f"{ped_scene}.MOV\n```"
+            )
+        else:
+            # --- KPI Cards ---
+            st.markdown("---")
+            kp1, kp2, kp3, kp4 = st.columns(4)
+
+            with kp1:
+                if person_count:
+                    st.metric("Total Unique Persons", person_count["total_unique"])
+
+            with kp2:
+                if person_count and person_count.get("per_frame_counts"):
+                    counts = [f["count"] for f in person_count["per_frame_counts"]]
+                    st.metric("Avg Persons / Frame", f"{np.mean(counts):.1f}")
+
+            with kp3:
+                if person_count and person_count.get("per_frame_counts"):
+                    counts = [f["count"] for f in person_count["per_frame_counts"]]
+                    st.metric("Peak Simultaneous", int(max(counts)))
+
+            with kp4:
+                if psi_data and psi_data.get("zones"):
+                    peak_zone = max(psi_data["zones"], key=lambda z: z["peak_psi"])
+                    st.metric(
+                        "Peak PSI",
+                        f"{peak_zone['peak_psi']:.1f}",
+                        f"{peak_zone['area']}",
+                    )
+
+            # --- Persons Over Time ---
+            if person_count and person_count.get("per_frame_counts"):
+                st.markdown("---")
+                st.subheader("Persons Detected Over Time")
+
+                frame_data = person_count["per_frame_counts"]
+                step = max(1, len(frame_data) // 500)
+                sampled = frame_data[::step]
+
+                fig_persons = px.line(
+                    x=[f["timestamp"] for f in sampled],
+                    y=[f["count"] for f in sampled],
+                    labels={"x": "Time (s)", "y": "Person Count"},
+                )
+                fig_persons.update_layout(height=300, showlegend=False)
+                st.plotly_chart(fig_persons, use_container_width=True)
+
+            # --- PSI Heatmap + Zone Table ---
+            if psi_data and psi_data.get("zones"):
+                st.markdown("---")
+                st.subheader("Parking Stress Index (PSI)")
+                st.caption(
+                    "PSI combines pedestrian density, vehicle density, and their ratio "
+                    "into a single 0-10 score per zone. Higher = more stressed."
+                )
+
+                psi_left, psi_right = st.columns([3, 2])
+
+                zones = psi_data["zones"]
+                grid_info = psi_data["grid"]
+                n_rows = grid_info["rows"]
+                n_cols = grid_info["cols"]
+
+                with psi_left:
+                    # Build heatmap grid
+                    heatmap = np.zeros((n_rows, n_cols))
+                    hover_text = [[""] * n_cols for _ in range(n_rows)]
+
+                    for z in zones:
+                        parts = z["area"].split("_")
+                        r, c = int(parts[1]), int(parts[2])
+                        heatmap[r, c] = z["avg_psi"]
+                        hover_text[r][c] = (
+                            f"{z['area']}<br>"
+                            f"Avg PSI: {z['avg_psi']}<br>"
+                            f"Peak PSI: {z['peak_psi']}<br>"
+                            f"Avg peds: {z['avg_peds']}<br>"
+                            f"Avg vehicles: {z['avg_vehicles']}"
+                        )
+
+                    fig_heatmap = go.Figure(go.Heatmap(
+                        z=heatmap,
+                        text=hover_text,
+                        hovertemplate="%{text}<extra></extra>",
+                        colorscale="YlOrRd",
+                        colorbar=dict(title="Avg PSI"),
+                    ))
+                    fig_heatmap.update_layout(
+                        xaxis=dict(
+                            title="Column",
+                            tickvals=list(range(n_cols)),
+                        ),
+                        yaxis=dict(
+                            title="Row",
+                            tickvals=list(range(n_rows)),
+                            autorange="reversed",
+                        ),
+                        height=380,
+                    )
+                    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+                with psi_right:
+                    # Zone details table sorted by avg PSI descending
+                    table_rows = sorted(zones, key=lambda z: z["avg_psi"], reverse=True)
+                    st.dataframe(
+                        [
+                            {
+                                "Zone": z["area"],
+                                "Avg PSI": z["avg_psi"],
+                                "Peak PSI": z["peak_psi"],
+                                "Avg Peds": z["avg_peds"],
+                                "Avg Vehicles": z["avg_vehicles"],
+                            }
+                            for z in table_rows
+                        ],
+                        use_container_width=True,
+                        height=380,
+                    )
+
+
+# ============================================================
+# TAB 4: Anomaly Detection (CHAD multi-camera)
 # ============================================================
 with tab_anomaly:
     models = get_available_anomaly_models()

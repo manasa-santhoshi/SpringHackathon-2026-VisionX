@@ -26,6 +26,8 @@ from src.pipeline.metrics import (
     compute_dwell_times,
     compute_entry_exit,
     compute_occupancy_timeline,
+    compute_person_count,
+    compute_psi,
     compute_vehicle_count,
 )
 
@@ -58,6 +60,9 @@ def main():
     parser.add_argument("--imgsz", type=int, default=1920, help="Inference image size")
     parser.add_argument("--sample-interval", type=float, default=1.0,
                         help="Occupancy sampling interval in seconds")
+    parser.add_argument("--grid", nargs=2, type=int, default=[4, 4],
+                        metavar=("COLS", "ROWS"),
+                        help="Grid divisions for PSI metric (default: 4 4)")
     args = parser.parse_args()
 
     video_path = Path(args.video).resolve()
@@ -160,6 +165,20 @@ def main():
         print(f"  Entries: {entry_exit['entry_count']}, Exits: {entry_exit['exit_count']}")
     else:
         print("  Skipping spatial metrics (no homography available)")
+
+    # --- Step 4: Pedestrian metrics (no homography needed) ---
+    print("\nComputing pedestrian metrics...")
+
+    person_count = compute_person_count(detections)
+    with open(output_dir / "person_count.json", "w") as f:
+        json.dump(person_count, f, indent=2)
+    print(f"  Person count: {person_count['total_unique']} unique persons detected")
+
+    psi = compute_psi(detections_data, grid_cols=args.grid[0], grid_rows=args.grid[1])
+    with open(output_dir / "psi.json", "w") as f:
+        json.dump(psi, f, indent=2)
+    print(f"  PSI computed for {len(psi['zones'])} zones "
+          f"({args.grid[0]}x{args.grid[1]} grid)")
 
     print(f"\nAll results saved to {output_dir}/")
 

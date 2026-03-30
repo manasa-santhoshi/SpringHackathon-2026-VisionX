@@ -3,6 +3,7 @@ Metrics computation from YOLO detections.
 
 All metrics are derived from model detections (not ground truth).
 Uses homography to map pixel detections to ground coordinates for spatial reasoning.
+Pedestrian metrics (person count, PSI) operate in pixel space and need no homography.
 """
 
 from collections import defaultdict
@@ -12,6 +13,10 @@ import pandas as pd
 
 from src.detection.base import FrameDetections
 from src.pipeline.homography import pixel_to_ground
+
+# --- Person / vehicle classification for serialized detections ---
+_PERSON_NAMES = {"pedestrian", "people", "person"}
+_VEHICLE_NAMES = {"car", "van", "truck", "bus"}
 
 
 def _point_in_rect(
@@ -295,4 +300,186 @@ def compute_entry_exit(
         "entry_count": len(entries),
         "exit_count": len(exits),
         "timeline": timeline,
+    }
+
+
+# =====================================================================
+# Pedestrian metrics (pixel-space, no homography needed)
+# =====================================================================
+
+
+def compute_person_count(detections: list[FrameDetections]) -> dict:
+    """
+    Count unique persons across all frames using track IDs.
+
+    Same structure as compute_vehicle_count but using frame.persons.
+    """
+    all_tracks = set()
+    per_frame_counts = []
+
+    for frame in detections:
+        frame_track_ids = set()
+        for p in frame.persons:
+            all_tracks.add(p.track_id)
+            frame_track_ids.add(p.track_id)
+        per_frame_counts.append({
+            "frame_idx": frame.frame_idx,
+            "timestamp": frame.timestamp,
+            "count": len(frame_track_ids),
+        })
+
+    return {
+        "total_unique": len(all_tracks),
+        "per_frame_counts": per_frame_counts,
+    }
+
+
+# --- Grid helpers for PSI ---
+
+def _infer_frame_size(detections_data: list[dict]) -> tuple[int, int]:
+    """Estimate frame width/height from max bbox coordinates."""
+    max_x, max_y = 0.0, 0.0
+    for frame in detections_data[:500]:
+        for det in frame.get("vehicles", []) + frame.get("persons", []):
+            cp = det.get("center_px")
+            if cp:
+                max_x = max(max_x, cp[0])
+                max_y = max(max_y, cp[1])
+    w = int(np.ceil(max_x / 100) * 100) if max_x > 0 else 3840
+    h = int(np.ceil(max_y / 100) * 100) if max_y > 0 else 2160
+    return w, h
+
+
+def _make_grid(
+    frame_w: int, frame_h: int, cols: int, rows: int,
+) -> dict[str, tuple[float, float, float, float]]:
+    """Return {cell_name: (x0, y0, x1, y1)} for an NxM pixel grid."""
+    cw = frame_w / cols
+    ch = frame_h / rows
+    return {
+        f"cell_{r}_{c}": (c * cw, r * ch, (c + 1) * cw, (r + 1) * ch)
+        for r in range(rows)
+        for c in range(cols)
+    }
+
+
+def _assign_cell(
+    cx: float, cy: float, grid: dict[str, tuple[float, float, float, float]],
+) -> str:
+    for name, (x0, y0, x1, y1) in grid.items():
+        if x0 <= cx < x1 and y0 <= cy < y1:
+            return name
+    return "outside"
+
+
+def compute_psi(
+    detections_data: list[dict],
+    grid_cols: int = 4,
+    grid_rows: int = 4,
+) -> dict:
+    """
+    Compute Parking Stress Index per grid zone.
+
+    PSI = 0.4 * norm(passengers) + 0.4 * norm(vehicles) + 0.2 * norm(ratio)
+    Scaled 0-10.
+
+    Args:
+        detections_data: Serialized detection dicts (with 'vehicles' and 'persons' keys).
+        grid_cols: Number of grid columns.
+        grid_rows: Number of grid rows.
+
+    Returns:
+        Dict with grid config and per-zone PSI summary.
+    """
+    fw, fh = _infer_frame_size(detections_data)
+    grid = _make_grid(fw, fh, grid_cols, grid_rows)
+
+    # Accumulate per-zone per-frame counts
+    zone_peds: dict[str, list[int]] = {name: [] for name in grid}
+    zone_vehs: dict[str, list[int]] = {name: [] for name in grid}
+
+    for frame in detections_data:
+        frame_peds: dict[str, int] = defaultdict(int)
+        frame_vehs: dict[str, int] = defaultdict(int)
+
+        for det in frame.get("persons", []):
+            cp = det.get("center_px")
+            if cp:
+                cell = _assign_cell(cp[0], cp[1], grid)
+                if cell != "outside":
+                    frame_peds[cell] += 1
+
+        for det in frame.get("vehicles", []):
+            cp = det.get("center_px")
+            if cp:
+                cell = _assign_cell(cp[0], cp[1], grid)
+                if cell != "outside":
+                    frame_vehs[cell] += 1
+
+        for name in grid:
+            zone_peds[name].append(frame_peds.get(name, 0))
+            zone_vehs[name].append(frame_vehs.get(name, 0))
+
+    # Compute per-zone averages
+    zones = []
+    avg_peds_all = []
+    avg_vehs_all = []
+    avg_ratio_all = []
+
+    for name in grid:
+        peds_arr = np.array(zone_peds[name], dtype=float)
+        vehs_arr = np.array(zone_vehs[name], dtype=float)
+        avg_p = float(peds_arr.mean())
+        avg_v = float(vehs_arr.mean())
+        avg_r = float(np.mean(peds_arr / np.where(vehs_arr > 0, vehs_arr, 1.0)))
+
+        avg_peds_all.append(avg_p)
+        avg_vehs_all.append(avg_v)
+        avg_ratio_all.append(avg_r)
+
+        zones.append({
+            "area": name,
+            "avg_peds": round(avg_p, 2),
+            "peak_peds": int(peds_arr.max()),
+            "avg_vehicles": round(avg_v, 2),
+            "peak_vehicles": int(vehs_arr.max()),
+        })
+
+    # Normalize and compute PSI
+    def _norm(vals: list[float]) -> np.ndarray:
+        arr = np.array(vals)
+        mn, mx = arr.min(), arr.max()
+        return np.zeros_like(arr) if mx == mn else (arr - mn) / (mx - mn)
+
+    norm_p = _norm(avg_peds_all)
+    norm_v = _norm(avg_vehs_all)
+    norm_r = _norm(avg_ratio_all)
+    psi_scores = (0.4 * norm_p + 0.4 * norm_v + 0.2 * norm_r) * 10
+
+    for i, zone in enumerate(zones):
+        zone["avg_psi"] = round(float(psi_scores[i]), 2)
+        # Peak PSI: compute per-frame PSI for this zone and take max
+        peds_arr = np.array(zone_peds[zone["area"]], dtype=float)
+        vehs_arr = np.array(zone_vehs[zone["area"]], dtype=float)
+        ratio_arr = peds_arr / np.where(vehs_arr > 0, vehs_arr, 1.0)
+
+        def _norm_arr(arr: np.ndarray) -> np.ndarray:
+            mn, mx = arr.min(), arr.max()
+            return np.zeros_like(arr) if mx == mn else (arr - mn) / (mx - mn)
+
+        frame_psi = (
+            0.4 * _norm_arr(peds_arr)
+            + 0.4 * _norm_arr(vehs_arr)
+            + 0.2 * _norm_arr(ratio_arr)
+        ) * 10
+        zone["peak_psi"] = round(float(frame_psi.max()), 2)
+
+    return {
+        "grid": {
+            "cols": grid_cols,
+            "rows": grid_rows,
+            "frame_width": fw,
+            "frame_height": fh,
+        },
+        "zones": zones,
     }
