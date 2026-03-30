@@ -239,6 +239,7 @@ class MetricsAccumulator:
                 "completed": len(self.completed_dwells),
                 "active_parked": active_parked,
                 "stats": dwell_stats,
+                "dwell_times": [d.copy() for d in self.completed_dwells],
             },
             "entry_exit": {
                 "entry_count": len(self.entries),

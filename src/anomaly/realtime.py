@@ -63,6 +63,7 @@ class RealtimeAnomalyDetector:
         model_dir: str,
         data_root: str | None = None,
         device: str | None = None,
+        threshold: float = 2.0,
     ):
         model_dir = Path(model_dir)
 
@@ -91,15 +92,7 @@ class RealtimeAnomalyDetector:
         )
         self.model.eval()
 
-        # Load threshold from evaluation
-        eval_path = model_dir / "evaluation.json"
-        if eval_path.exists():
-            with open(eval_path) as f:
-                eval_data = json.load(f)
-            self.threshold = eval_data.get("threshold", 0.0)
-            self.threshold = 2.0
-        else:
-            self.threshold = 0.0
+        self.threshold = threshold
 
         # Data root
         if data_root is None:

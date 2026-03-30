@@ -146,7 +146,7 @@ with tab_live:
             # Lazy imports to avoid slowing tab load
             sys.path.insert(0, str(PROJECT_ROOT / "dlp-dataset"))
             from ultralytics import YOLO
-            from src.detection.yolo_detector import _detect_class_map
+            from src.detection.yolo_detector import _detect_class_maps
             from src.pipeline.realtime import (
                 MetricsAccumulator,
                 draw_detections,
@@ -180,7 +180,7 @@ with tab_live:
 
                 if parking_spaces is not None:
                     model = YOLO(model_path)
-                    vehicle_classes = _detect_class_map(model)
+                    vehicle_classes, _ = _detect_class_maps(model)
                     accumulator = MetricsAccumulator(H, parking_spaces)
 
                     cap = cv2.VideoCapture(str(video_file))
@@ -289,13 +289,36 @@ with tab_live:
                                 fig_occ, use_container_width=True, key=f"occ_chart_{frame_idx}"
                             )
 
-                        # Dwell info
-                        if dw["stats"]:
-                            dwell_placeholder.caption(
-                                f"Completed dwells: {dw['completed']} | "
-                                f"Active parked: {dw['active_parked']} | "
-                                f"Avg: {format_duration(dw['stats']['mean_sec'])}"
-                            )
+                        # Dwell distribution
+                        if processed % 5 == 0:
+                            with dwell_placeholder.container():
+                                dwell_times = dw.get("dwell_times", [])
+                                if dwell_times:
+                                    durations = [d["duration_sec"] for d in dwell_times]
+                                    fig_dwell = px.histogram(
+                                        x=durations,
+                                        nbins=20,
+                                        labels={"x": "Duration (s)", "y": "Count"},
+                                        color_discrete_sequence=["steelblue"],
+                                    )
+                                    fig_dwell.update_layout(
+                                        title="Dwell Time Distribution",
+                                        xaxis_title="Duration (s)",
+                                        yaxis_title="Count",
+                                        height=250,
+                                        margin=dict(t=30, b=30),
+                                        showlegend=False,
+                                    )
+                                    st.plotly_chart(
+                                        fig_dwell, use_container_width=True,
+                                        key=f"dwell_chart_{frame_idx}",
+                                    )
+                                st.caption(
+                                    f"Completed: {dw['completed']} | "
+                                    f"Active parked: {dw['active_parked']}"
+                                    + (f" | Avg: {format_duration(dw['stats']['mean_sec'])}"
+                                       if dw["stats"] else "")
+                                )
 
                     cap.release()
                     st.session_state.live_running = False
@@ -474,7 +497,7 @@ with tab_vehicle:
                             "Mean": format_duration(np.mean(durs)),
                             "Median": format_duration(np.median(durs)),
                         })
-                    st.dataframe(rows, use_container_width=True)
+                    st.dataframe(rows, width="stretch")
             else:
                 st.info("No dwell time data available")
 
@@ -685,7 +708,7 @@ with tab_pedestrian:
                             }
                             for z in table_rows
                         ],
-                        use_container_width=True,
+                        width="stretch",
                         height=380,
                     )
 
@@ -720,7 +743,7 @@ with tab_anomaly_live:
         st.info("CHAD dataset not found. Place it in `data/raw/CHAD/CHAD_Meta/`.")
     else:
         # Controls
-        anom_ctrl1, anom_ctrl2, anom_ctrl3 = st.columns([2, 2, 1])
+        anom_ctrl1, anom_ctrl2, anom_ctrl3, anom_ctrl4 = st.columns([2, 2, 1, 1])
 
         with anom_ctrl1:
             anom_model_name = st.selectbox(
@@ -759,6 +782,12 @@ with tab_anomaly_live:
                     "Frame skip", 1, 5, 1, key="anom_live_skip"
                 )
 
+            with anom_ctrl4:
+                anom_threshold = st.number_input(
+                    "Threshold", min_value=0.0, value=2.0, step=0.1,
+                    key="anom_live_threshold",
+                )
+
             # Session state
             if "anom_running" not in st.session_state:
                 st.session_state.anom_running = False
@@ -795,6 +824,7 @@ with tab_anomaly_live:
                 detector = RealtimeAnomalyDetector(
                     model_dir=model_path,
                     data_root=str(CHAD_META_DIR),
+                    threshold=anom_threshold,
                 )
                 detector.load_video(chad_video_stem)
 
@@ -964,7 +994,10 @@ with tab_anomaly:
             st.error("Evaluation data not found.")
         else:
             overall = eval_data["overall"]
-            threshold = eval_data.get("threshold", 0)
+            threshold = st.number_input(
+                "Anomaly Threshold", min_value=0.0, value=2.0, step=0.1,
+                key="anomaly_threshold",
+            )
 
             # --- KPI Cards ---
             st.markdown("---")
@@ -1059,24 +1092,28 @@ with tab_anomaly:
                     reverse=True,
                 )
 
-                # Show top anomalous videos
-                st.markdown(f"**Anomaly Threshold (EER):** `{threshold:.6f}`")
+                # Video selector
+                video_names = [vid_name for vid_name, _ in sorted_videos]
+                selected_video = st.selectbox(
+                    "Select Video", video_names, key="anomaly_video_select",
+                )
 
-                # Timeline for selected videos
-                top_n = min(10, len(sorted_videos))
-                if top_n > 0:
+                st.markdown(f"**Anomaly Threshold:** `{threshold:.2f}`")
+
+                # Timeline for selected video
+                if selected_video and selected_video in filtered_videos:
+                    vid_data = filtered_videos[selected_video]
+                    timeline = vid_data["score_timeline"]
+                    color = "red" if vid_data["has_anomaly"] else "steelblue"
+
                     fig_timeline = go.Figure()
-                    for vid_name, vid_data in sorted_videos[:top_n]:
-                        timeline = vid_data["score_timeline"]
-                        color = "red" if vid_data["has_anomaly"] else "steelblue"
-                        fig_timeline.add_trace(go.Scatter(
-                            x=list(range(len(timeline))),
-                            y=timeline,
-                            mode="lines",
-                            name=f"{vid_name} (Cam {vid_data['camera_id']})",
-                            line=dict(color=color, width=1.5),
-                            opacity=0.8,
-                        ))
+                    fig_timeline.add_trace(go.Scatter(
+                        x=list(range(len(timeline))),
+                        y=timeline,
+                        mode="lines",
+                        name=f"{selected_video} (Cam {vid_data['camera_id']})",
+                        line=dict(color=color, width=1.5),
+                    ))
 
                     # Add threshold line
                     fig_timeline.add_hline(
@@ -1117,7 +1154,7 @@ with tab_anomaly:
                             "Ground Truth": "Anomalous" if vid_data["has_anomaly"] else "Normal",
                             "Sequences": vid_data["num_sequences"],
                         })
-                    st.dataframe(alert_data, use_container_width=True)
+                    st.dataframe(alert_data, width="stretch")
                 else:
                     st.success("No anomalies detected above threshold")
 
