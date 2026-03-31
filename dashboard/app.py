@@ -96,7 +96,7 @@ with tab_live:
         )
     else:
         # Controls
-        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
+        ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 1, 1, 1])
         with ctrl_col1:
             video_file = st.selectbox(
                 "Video",
@@ -105,8 +105,10 @@ with tab_live:
                 key="live_video",
             )
         with ctrl_col2:
-            frame_skip = st.slider("Process every Nth frame", 1, 10, 3, key="live_skip")
+            frame_skip = st.slider("Process every Nth frame", 1, 15, 5, key="live_skip")
         with ctrl_col3:
+            max_frames_pct = st.slider("Video length %", 10, 100, 40, step=10, key="live_max_pct")
+        with ctrl_col4:
             model_path = st.text_input(
                 "Model",
                 value=str(PROJECT_ROOT / "models" / "yolo11n-visdrone" / "weights" / "bestVisDrone.pt"),
@@ -134,6 +136,7 @@ with tab_live:
             frame_placeholder = st.empty()
             fps_placeholder = st.empty()
             progress_placeholder = st.empty()
+            twin_live_placeholder = st.empty()
 
         with metrics_col:
             kpi_placeholder = st.empty()
@@ -185,6 +188,7 @@ with tab_live:
 
                     cap = cv2.VideoCapture(str(video_file))
                     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    max_frames = int(total_frames * max_frames_pct / 100)
                     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
                     frame_idx = 0
@@ -196,6 +200,8 @@ with tab_live:
                             break
 
                         frame_idx += 1
+                        if frame_idx > max_frames:
+                            break
 
                         # Skip frames for performance
                         if frame_idx % frame_skip != 0:
@@ -205,10 +211,12 @@ with tab_live:
                         timestamp = frame_idx / fps
 
                         # Run YOLO tracking on single frame
+                        tracker_cfg = str(PROJECT_ROOT / "configs" / "bytetrack_parking.yaml")
                         results = model.track(
                             source=frame_bgr,
+                            tracker=tracker_cfg,
                             persist=True,
-                            imgsz=1920,
+                            imgsz=1280,
                             conf=0.25,
                             classes=list(vehicle_classes.keys()),
                             verbose=False,
@@ -231,12 +239,12 @@ with tab_live:
                         proc_time = time.time() - t0
                         current_fps = 1.0 / proc_time if proc_time > 0 else 0
                         fps_placeholder.caption(
-                            f"Frame {frame_idx}/{total_frames} | "
+                            f"Frame {frame_idx}/{max_frames} | "
                             f"{current_fps:.1f} FPS | "
                             f"Time: {timestamp:.1f}s"
                         )
                         progress_placeholder.progress(
-                            min(frame_idx / total_frames, 1.0)
+                            min(frame_idx / max_frames, 1.0)
                         )
 
                         # Update KPI cards
@@ -287,6 +295,18 @@ with tab_live:
                             )
                             occ_chart_placeholder.plotly_chart(
                                 fig_occ, use_container_width=True, key=f"occ_chart_{frame_idx}"
+                            )
+
+                        # Virtual twin map (every 10 processed frames)
+                        if processed % 10 == 0 and occ.get("occupied_space_ids"):
+                            from dashboard.virtual_twin import render_parking_map
+                            fig_twin_live = render_parking_map(
+                                parking_spaces, occ["occupied_space_ids"],
+                                title=f"Virtual Twin — t={timestamp:.1f}s",
+                            )
+                            twin_live_placeholder.plotly_chart(
+                                fig_twin_live, use_container_width=True,
+                                key=f"twin_live_{frame_idx}",
                             )
 
                         # Dwell distribution
@@ -835,6 +855,7 @@ with tab_anomaly_live:
 
                 frame_idx = 0
                 alert_count = 0
+                in_anomaly = False
                 processed = 0
 
                 while cap.isOpened() and st.session_state.anom_running:
@@ -857,14 +878,18 @@ with tab_anomaly_live:
 
                     # Color border based on anomaly
                     if result.is_anomaly:
-                        alert_count += 1
+                        if not in_anomaly:
+                            alert_count += 1
+                            in_anomaly = True
                         # Red border
                         cv2.rectangle(display, (0, 0), (w_frame - 1, h_frame - 1), (0, 0, 255), 6)
                         cv2.putText(
                             display, "ANOMALY DETECTED",
                             (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3,
                         )
-                    elif result.gt_label == 1:
+                    else:
+                        in_anomaly = False
+                    if not result.is_anomaly and result.gt_label == 1:
                         # Orange border for GT anomaly but model didn't flag
                         cv2.rectangle(display, (0, 0), (w_frame - 1, h_frame - 1), (0, 165, 255), 4)
 

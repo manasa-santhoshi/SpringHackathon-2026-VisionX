@@ -16,7 +16,7 @@ from src.pipeline.homography import pixel_to_ground
 
 # --- Person / vehicle classification for serialized detections ---
 _PERSON_NAMES = {"pedestrian", "people", "person"}
-_VEHICLE_NAMES = {"car", "van", "truck", "bus"}
+_VEHICLE_NAMES = {"car", "medium vehicle", "bus"}
 
 
 def _point_in_rect(
@@ -81,17 +81,19 @@ def compute_vehicle_count(detections: list[FrameDetections]) -> dict:
     """
     Count unique vehicles across all frames using track IDs.
 
+    Each track is assigned its majority class (most frequent classification)
+    to avoid double-counting from per-frame class flickering.
+
     Returns dict with total_unique, by_class breakdown, and per_frame_counts.
     """
-    all_tracks = set()
-    tracks_by_class = defaultdict(set)
+    # Count class votes per track
+    track_class_votes: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     per_frame_counts = []
 
     for frame in detections:
         frame_track_ids = set()
         for v in frame.vehicles:
-            all_tracks.add(v.track_id)
-            tracks_by_class[v.class_name].add(v.track_id)
+            track_class_votes[v.track_id][v.class_name] += 1
             frame_track_ids.add(v.track_id)
         per_frame_counts.append({
             "frame_idx": frame.frame_idx,
@@ -99,9 +101,15 @@ def compute_vehicle_count(detections: list[FrameDetections]) -> dict:
             "count": len(frame_track_ids),
         })
 
+    # Assign each track its majority class
+    by_class: dict[str, int] = defaultdict(int)
+    for votes in track_class_votes.values():
+        majority_class = max(votes, key=votes.get)
+        by_class[majority_class] += 1
+
     return {
-        "total_unique": len(all_tracks),
-        "by_class": {cls: len(ids) for cls, ids in tracks_by_class.items()},
+        "total_unique": len(track_class_votes),
+        "by_class": dict(by_class),
         "per_frame_counts": per_frame_counts,
     }
 
@@ -128,6 +136,7 @@ def compute_occupancy_timeline(
     timestamps = []
     occupied_counts = []
     free_counts = []
+    occupied_space_ids: list[list[int]] = []
     by_area = {area: {"occupied": [], "total": count} for area, count in area_totals.items()}
 
     last_sampled_time = -sample_interval  # ensure first frame is sampled
@@ -152,6 +161,7 @@ def compute_occupancy_timeline(
         timestamps.append(round(frame.timestamp, 2))
         occupied_counts.append(n_occupied)
         free_counts.append(total_spaces - n_occupied)
+        occupied_space_ids.append([int(sid) for sid in occupied_spaces])
 
         for area in by_area:
             by_area[area]["occupied"].append(area_occupied.get(area, 0))
@@ -162,6 +172,7 @@ def compute_occupancy_timeline(
         "free": free_counts,
         "total_spaces": total_spaces,
         "by_area": by_area,
+        "occupied_space_ids": occupied_space_ids,
     }
 
 
@@ -190,13 +201,17 @@ def compute_dwell_times(
     dwell_times = []
     first_timestamp = detections[0].timestamp if detections else 0.0
     last_timestamp = detections[-1].timestamp if detections else 0.0
+    # Grace period: ignore brief gaps where detection jitter causes the vehicle
+    # center to fall outside its parking space for a few frames.
+    gap_tolerance = 3.0  # seconds
 
     for track_id, timeline in track_timeline.items():
         timeline.sort(key=lambda x: x[0])
 
-        # Find contiguous parked segments
+        # Find parked segments with gap tolerance
         parked_start = None
         parked_area = None
+        gap_start = None  # timestamp when the vehicle first left the space
 
         for ts, gx, gy in timeline:
             area = lookup.find_space(gx, gy)
@@ -204,23 +219,31 @@ def compute_dwell_times(
                 if parked_start is None:
                     parked_start = ts
                     parked_area = area
+                # Vehicle is back in a space — reset any gap
+                gap_start = None
             else:
                 if parked_start is not None:
-                    duration = ts - parked_start
-                    if duration > 2.0:  # minimum 2 seconds to count
-                        censored_start = abs(parked_start - first_timestamp) < 1.0
-                        dwell_times.append({
-                            "track_id": track_id,
-                            "duration_sec": round(duration, 2),
-                            "area": parked_area,
-                            "censored": censored_start,
-                        })
-                    parked_start = None
-                    parked_area = None
+                    if gap_start is None:
+                        gap_start = ts
+                    elif ts - gap_start > gap_tolerance:
+                        # Gap exceeded tolerance — finalize this segment
+                        duration = gap_start - parked_start
+                        if duration > 2.0:
+                            censored_start = abs(parked_start - first_timestamp) < 1.0
+                            dwell_times.append({
+                                "track_id": track_id,
+                                "duration_sec": round(duration, 2),
+                                "area": parked_area,
+                                "censored": censored_start,
+                            })
+                        parked_start = None
+                        parked_area = None
+                        gap_start = None
 
         # Handle still-parked at end of video
         if parked_start is not None:
-            duration = timeline[-1][0] - parked_start
+            end_ts = gap_start if gap_start is not None else timeline[-1][0]
+            duration = end_ts - parked_start
             if duration > 2.0:
                 censored_end = abs(timeline[-1][0] - last_timestamp) < 1.0
                 censored_start = abs(parked_start - first_timestamp) < 1.0
