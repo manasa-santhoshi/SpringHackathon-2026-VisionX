@@ -65,6 +65,8 @@ def main():
                         help="Grid divisions for PSI metric (default: 4 4)")
     parser.add_argument("--skip-detection", action="store_true",
                         help="Skip detection, reuse existing detections.json")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="Stop after processing this many frames (trim video)")
     args = parser.parse_args()
 
     video_path = Path(args.video).resolve()
@@ -125,11 +127,14 @@ def main():
                 frame_idx=fd["frame_idx"], timestamp=fd["timestamp"],
                 vehicles=vehicles, persons=persons,
             ))
+        if args.max_frames is not None:
+            detections = detections[:args.max_frames]
+            detections_data = detections_data[:args.max_frames]
         print(f"Loaded {len(detections)} frames from cache")
     else:
         print(f"\nRunning YOLOv11 detection + tracking on {video_path}")
         detector = YOLODetector(model_name=args.model, conf_threshold=args.conf)
-        detections = detector.detect_and_track(str(video_path), imgsz=args.imgsz)
+        detections = detector.detect_and_track(str(video_path), imgsz=args.imgsz, max_frames=args.max_frames)
         print(f"Processed {len(detections)} frames")
 
         # Save raw detections for reuse

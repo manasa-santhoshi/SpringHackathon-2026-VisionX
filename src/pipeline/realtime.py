@@ -53,7 +53,7 @@ class MetricsAccumulator:
 
         # Vehicle count state
         self.all_tracks: set[int] = set()
-        self.tracks_by_class: dict[str, set[int]] = defaultdict(set)
+        self.track_class_votes: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.per_frame_counts: list[dict] = []
 
         # Occupancy state
@@ -93,7 +93,7 @@ class MetricsAccumulator:
 
             # Vehicle count
             self.all_tracks.add(v.track_id)
-            self.tracks_by_class[v.class_name].add(v.track_id)
+            self.track_class_votes[v.track_id][v.class_name] += 1
 
             # Ground coords
             gx, gy = pixel_to_ground(self.H, v.center_px[0], v.center_px[1])
@@ -152,15 +152,25 @@ class MetricsAccumulator:
         for tid in lost_tracks:
             self._finalize_track(tid)
 
+    def _majority_class_counts(self) -> dict[str, int]:
+        """Count tracks by majority class (most frequent classification)."""
+        by_class: dict[str, int] = defaultdict(int)
+        for votes in self.track_class_votes.values():
+            majority_class = max(votes, key=votes.get)
+            by_class[majority_class] += 1
+        return dict(by_class)
+
     def _finalize_track(self, track_id: int) -> None:
         """Finalize dwell times and exit events for a lost track."""
         timeline = self.active_tracks.pop(track_id, [])
         if not timeline:
             return
 
-        # Dwell time computation
+        # Dwell time computation with gap tolerance
+        gap_tolerance = 3.0
         parked_start = None
         parked_area = None
+        gap_start = None
 
         for ts, gx, gy in timeline:
             area = self._lookup.find_space(gx, gy)
@@ -168,21 +178,27 @@ class MetricsAccumulator:
                 if parked_start is None:
                     parked_start = ts
                     parked_area = area
+                gap_start = None
             else:
                 if parked_start is not None:
-                    duration = ts - parked_start
-                    if duration > 2.0:
-                        self.completed_dwells.append({
-                            "track_id": track_id,
-                            "duration_sec": round(duration, 2),
-                            "area": parked_area,
-                        })
-                    parked_start = None
-                    parked_area = None
+                    if gap_start is None:
+                        gap_start = ts
+                    elif ts - gap_start > gap_tolerance:
+                        duration = gap_start - parked_start
+                        if duration > 2.0:
+                            self.completed_dwells.append({
+                                "track_id": track_id,
+                                "duration_sec": round(duration, 2),
+                                "area": parked_area,
+                            })
+                        parked_start = None
+                        parked_area = None
+                        gap_start = None
 
         # Handle still-parked at track loss
         if parked_start is not None:
-            duration = timeline[-1][0] - parked_start
+            end_ts = gap_start if gap_start is not None else timeline[-1][0]
+            duration = end_ts - parked_start
             if duration > 2.0:
                 self.completed_dwells.append({
                     "track_id": track_id,
@@ -206,28 +222,49 @@ class MetricsAccumulator:
 
     def get_snapshot(self) -> dict:
         """Return current state of all metrics for dashboard rendering."""
-        # Dwell stats
-        durations = [d["duration_sec"] for d in self.completed_dwells]
-        dwell_stats = {}
-        if durations:
-            dwell_stats = {
-                "mean_sec": round(float(np.mean(durations)), 2),
-                "median_sec": round(float(np.median(durations)), 2),
-                "count": len(durations),
-            }
-
-        # Count active parked vehicles (currently in a parking space)
+        # Compute active dwell times for vehicles currently parked
         active_parked = 0
+        active_dwells: list[dict] = []
         for tid, timeline in self.active_tracks.items():
-            if timeline:
-                _, gx, gy = timeline[-1]
-                if self._lookup.find_space(gx, gy) is not None:
-                    active_parked += 1
+            if not timeline:
+                continue
+            last_ts, gx, gy = timeline[-1]
+            if self._lookup.find_space(gx, gy) is None:
+                continue
+            active_parked += 1
+            # Find when this vehicle first entered a parking space (with gap tolerance)
+            gap_tolerance = 3.0
+            parked_start = None
+            gap_start = None
+            for ts, tx, ty in timeline:
+                area = self._lookup.find_space(tx, ty)
+                if area is not None:
+                    if parked_start is None:
+                        parked_start = ts
+                    gap_start = None
+                else:
+                    if parked_start is not None:
+                        if gap_start is None:
+                            gap_start = ts
+                        elif ts - gap_start > gap_tolerance:
+                            parked_start = None
+                            gap_start = None
+            if parked_start is not None:
+                duration = last_ts - parked_start
+                if duration > 2.0:
+                    active_dwells.append({
+                        "track_id": tid,
+                        "duration_sec": round(duration, 2),
+                    })
+
+        # Merge completed + active dwells for stats
+        all_dwells = [d.copy() for d in self.completed_dwells] + active_dwells
+        all_durations = [d["duration_sec"] for d in all_dwells]
 
         return {
             "vehicle_count": {
                 "total_unique": len(self.all_tracks),
-                "by_class": {cls: len(ids) for cls, ids in self.tracks_by_class.items()},
+                "by_class": self._majority_class_counts(),
                 "current_frame_count": self.per_frame_counts[-1]["count"] if self.per_frame_counts else 0,
             },
             "occupancy": {
@@ -241,8 +278,12 @@ class MetricsAccumulator:
             "dwell": {
                 "completed": len(self.completed_dwells),
                 "active_parked": active_parked,
-                "stats": dwell_stats,
-                "dwell_times": [d.copy() for d in self.completed_dwells],
+                "stats": {
+                    "mean_sec": round(float(np.mean(all_durations)), 2),
+                    "median_sec": round(float(np.median(all_durations)), 2),
+                    "count": len(all_durations),
+                } if all_durations else {},
+                "dwell_times": all_dwells,
             },
             "entry_exit": {
                 "entry_count": len(self.entries),

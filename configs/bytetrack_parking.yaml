@@ -1,0 +1,12 @@
+# ByteTrack config tuned for parking lot footage (mostly stationary vehicles).
+# - track_buffer=300: ~12s at 25fps, survives long detection gaps for parked cars
+# - match_thresh=0.7: more lenient matching for stationary cars with jittery bboxes
+# - new_track_thresh=0.4: higher bar to create new tracks, reduces false new IDs
+
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.4
+track_buffer: 300
+match_thresh: 0.7
+fuse_score: True

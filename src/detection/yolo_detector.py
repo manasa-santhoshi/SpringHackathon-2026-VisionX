@@ -15,8 +15,9 @@ from src.detection.base import DetectedVehicle, FrameDetections, ParkingDetector
 # COCO class IDs for vehicles
 COCO_VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
-# VisDrone class IDs for vehicles (excludes pedestrian, people, bicycle, tricycle, awning-tricycle, motor)
-VISDRONE_VEHICLE_CLASSES = {3: "car", 4: "van", 5: "truck", 8: "bus"}
+# VisDrone class IDs mapped to DLP categories (car, medium vehicle, bus)
+# Excludes truck (5) to match DLP ground truth classes
+VISDRONE_VEHICLE_CLASSES = {3: "car", 4: "medium vehicle", 8: "bus"}
 
 # DLP class IDs (from prepare_dlp_dataset.py)
 DLP_VEHICLE_CLASSES = {0: "car", 1: "medium vehicle", 2: "bus"}
@@ -29,7 +30,7 @@ def _detect_class_maps(model: YOLO) -> tuple[dict[int, str], dict[int, str]]:
     Returns (vehicle_classes, person_classes).
     """
     names = model.names
-    if names.get(3) == "car" and names.get(4) == "van":
+    if names.get(3) == "car" and names.get(4) in ("van", "medium vehicle"):
         return VISDRONE_VEHICLE_CLASSES, VISDRONE_PERSON_CLASSES
     return COCO_VEHICLE_CLASSES, {}
 
@@ -53,12 +54,16 @@ class YOLODetector(ParkingDetector):
         if self.person_classes:
             print(f"Person classes: {self.person_classes}")
 
+    # Custom tracker config with larger track_buffer for parking lot footage
+    _DEFAULT_TRACKER = str(Path(__file__).resolve().parents[2] / "configs" / "bytetrack_parking.yaml")
+
     def detect_and_track(
         self,
         video_path: str,
-        tracker: str = "bytetrack.yaml",
+        tracker: str = _DEFAULT_TRACKER,
         imgsz: int = 1920,
         stream: bool = True,
+        max_frames: int | None = None,
         **kwargs,
     ) -> list[FrameDetections]:
         """
@@ -69,6 +74,7 @@ class YOLODetector(ParkingDetector):
             tracker: Tracker config (default ByteTrack).
             imgsz: Inference image size (width). 1920 balances speed and accuracy for 4K.
             stream: Stream results to reduce memory usage.
+            max_frames: Stop after this many frames (None = process all).
 
         Returns:
             List of FrameDetections with tracked vehicles.
@@ -89,7 +95,9 @@ class YOLODetector(ParkingDetector):
         all_detections = []
         fps_val = None
 
-        for frame_idx, result in enumerate(tqdm(results, desc="Processing video")):
+        for frame_idx, result in enumerate(tqdm(results, desc="Processing video", total=max_frames)):
+            if max_frames is not None and frame_idx >= max_frames:
+                break
             if fps_val is None:
                 try:
                     fps_val = self.model.predictor.dataset.cap.get(5)  # cv2.CAP_PROP_FPS
