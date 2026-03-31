@@ -2,10 +2,10 @@
 Parking Lot Analytics Dashboard.
 
 Four tabs:
-1. Live Demo — real-time YOLO inference on DLP video with live metrics
-2. Vehicle Analytics — metrics from the batch detection/tracking pipeline (DLP)
-3. Pedestrian Analytics — person counting and Parking Stress Index (PSI)
-4. Anomaly Detection — multi-camera skeleton-based anomaly detection (CHAD)
+1. Operations Center — real-time YOLO inference on DLP video with live metrics
+2. Occupancy Insights — metrics from the batch detection/tracking pipeline (DLP)
+3. Flow Analytics — person counting and Parking Stress Index (PSI)
+4. Anomaly Alerts — multi-camera skeleton-based anomaly detection (CHAD)
 
 Usage:
     streamlit run dashboard/app.py
@@ -67,20 +67,23 @@ def format_duration(seconds: float) -> str:
 
 
 # --- Page config ---
-st.set_page_config(page_title="Parking Analytics", page_icon="P", layout="wide")
-st.title("Parking Lot Analytics Dashboard")
+st.set_page_config(page_title="VisionX ParkOps", page_icon="🚗", layout="wide")
+
+st.title("VisionX ParkOps")
+st.caption("AI-powered parking operations for real-time visibility, smarter decisions, and safer environments.")
 
 # --- Tabs ---
 tab_live, tab_vehicle, tab_pedestrian, tab_anomaly_live, tab_anomaly = st.tabs(
-    ["Live Demo", "Vehicle Analytics", "Pedestrian Analytics",
-     "Anomaly Demo", "Anomaly Detection"]
+    ["Operations Center", "Occupancy Insights", "Flow Analytics",
+ "Live Monitoring", "Anomaly Alerts"]
 )
 
 # ============================================================
-# TAB 1: Live Demo (real-time inference)
+# TAB 1: Operations Center (real-time inference)
 # ============================================================
 with tab_live:
-    st.subheader("Real-Time Vehicle Detection & Tracking")
+    st.subheader("Live Site Operations")
+    st.caption("Monitor real-time vehicle activity, occupancy, and traffic flow across the parking facility.")
 
     # --- Config sidebar (inside tab to avoid polluting other tabs) ---
     DLP_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "DLP" / "raw"
@@ -91,7 +94,7 @@ with tab_live:
 
     if not available_videos:
         st.info(
-            "No DLP video files found. Place `.MOV` files in `data/raw/DLP/raw/`.\n\n"
+            "No video source connected. Upload a demo video or connect a live feed to begin monitoring operations.nd. Place `.MOV` files in `data/raw/DLP/raw/`.\n\n"
             "Download from the [DLP dataset site](https://sites.google.com/berkeley.edu/dlp-dataset)."
         )
     else:
@@ -121,10 +124,10 @@ with tab_live:
 
         start_col, stop_col, status_col = st.columns([1, 1, 2])
         with start_col:
-            if st.button("Start", key="live_start", use_container_width=True):
+            if st.button("▶ Start Monitoring", key="live_start", use_container_width=True):
                 st.session_state.live_running = True
         with stop_col:
-            if st.button("Stop", key="live_stop", use_container_width=True):
+            if st.button("⏹ Stop Monitoring", key="live_stop", use_container_width=True):
                 st.session_state.live_running = False
 
         st.markdown("---")
@@ -256,8 +259,8 @@ with tab_live:
                         with kpi_placeholder.container():
                             k1, k2 = st.columns(2)
                             with k1:
-                                st.metric("Unique Vehicles", vc["total_unique"])
-                                st.metric("In Frame", vc["current_frame_count"])
+                                st.metric("Total Vehicles Processed", vc["total_unique"])
+                                st.metric("Active Vehicles", vc["current_frame_count"])
                             with k2:
                                 occ_pct = round(
                                     occ["current_occupied"] / occ["total_spaces"] * 100, 1
@@ -268,7 +271,7 @@ with tab_live:
                                     f"{occ_pct}%",
                                 )
                                 st.metric(
-                                    "Entries / Exits",
+                                    "Traffic Flow (In / Out)",
                                     f"{ee['entry_count']} / {ee['exit_count']}",
                                 )
 
@@ -286,7 +289,7 @@ with tab_live:
                                 name="Occupied",
                             ))
                             fig_occ.update_layout(
-                                title="Occupancy Over Time",
+                                title="Real-Time Occupancy Trends",
                                 xaxis_title="Time (s)",
                                 yaxis_title="Occupied Spots",
                                 height=250,
@@ -322,7 +325,7 @@ with tab_live:
                                         color_discrete_sequence=["steelblue"],
                                     )
                                     fig_dwell.update_layout(
-                                        title="Dwell Time Distribution",
+                                        title="Parking Duration Insights",
                                         xaxis_title="Duration (s)",
                                         yaxis_title="Count",
                                         height=250,
@@ -342,12 +345,16 @@ with tab_live:
 
                     cap.release()
                     st.session_state.live_running = False
-                    st.success("Video processing complete.")
+                    st.success("Monitoring session complete. Insights successfully generated.")
 
 
 # ============================================================
-# TAB 2: Vehicle Analytics (existing functionality)
+# TAB 2: Occupancy Insights (existing functionality)
 # ============================================================
+
+st.subheader("Occupancy & Utilization Insights")
+st.caption("Analyze parking usage patterns, occupancy trends, and vehicle behavior over time.")
+
 with tab_vehicle:
     scenes = get_available_scenes()
     if not scenes:
@@ -373,7 +380,7 @@ with tab_vehicle:
 
         with col1:
             if vehicle_count:
-                st.metric("Total Vehicles Detected", vehicle_count["total_unique"])
+                st.metric("Total Vehicles Observed", vehicle_count["total_unique"])
                 by_class = vehicle_count.get("by_class", {})
                 if by_class:
                     breakdown = ", ".join(f"{v} {k}s" for k, v in sorted(by_class.items()))
@@ -384,12 +391,12 @@ with tab_vehicle:
                 avg_occupied = round(np.mean(occupancy["occupied"]), 1)
                 total = occupancy["total_spaces"]
                 occupancy_pct = round(avg_occupied / total * 100, 1) if total else 0
-                st.metric("Avg Occupancy", f"{avg_occupied}/{total}", f"{occupancy_pct}%")
+                st.metric("Average Occupancy Rate", f"{avg_occupied}/{total}", f"{occupancy_pct}%")
 
         with col3:
             if dwell and dwell.get("stats"):
                 mean_dwell = dwell["stats"]["mean_sec"]
-                st.metric("Avg Dwell Time", format_duration(mean_dwell))
+                st.metric("Average Parking Duration", format_duration(mean_dwell))
                 st.caption(
                     f"Median: {format_duration(dwell['stats']['median_sec'])}, "
                     f"{dwell['stats']['count']} events"
@@ -397,13 +404,13 @@ with tab_vehicle:
 
         with col4:
             if entry_exit:
-                st.metric("Entries / Exits",
+                st.metric("Total Traffic Flow",
                            f"{entry_exit['entry_count']} / {entry_exit['exit_count']}")
 
-        # --- Row 2: Occupancy Over Time ---
+        # --- Row 2: Occupancy Trends & Utilization ---
         if occupancy:
             st.markdown("---")
-            st.subheader("Occupancy Over Time")
+            st.subheader("Occupancy Trends & Utilization")
 
             occ_opt1, occ_opt2, occ_opt3 = st.columns(3)
             with occ_opt1:
@@ -479,12 +486,12 @@ with tab_vehicle:
 
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- Row 3: Dwell Times + Entry/Exit ---
+        # --- Row 3: Parking Duration Analysis ---
         st.markdown("---")
         col_left, col_right = st.columns(2)
 
         with col_left:
-            st.subheader("Dwell Time Distribution")
+            st.subheader("Parking Duration Insights")
             if dwell and dwell.get("dwell_times"):
                 durations = [d["duration_sec"] for d in dwell["dwell_times"]]
                 fig_dwell = px.histogram(
@@ -522,7 +529,7 @@ with tab_vehicle:
                 st.info("No dwell time data available")
 
         with col_right:
-            st.subheader("Cumulative Entries & Exits")
+            st.subheader("Traffic Flow Over Time")
             if entry_exit and entry_exit.get("timeline"):
                 timeline = entry_exit["timeline"]
                 fig_ee = go.Figure()
@@ -552,7 +559,7 @@ with tab_vehicle:
         # --- Row 4: Per-frame detection count ---
         if vehicle_count and vehicle_count.get("per_frame_counts"):
             st.markdown("---")
-            st.subheader("Vehicles Detected Per Frame")
+            st.subheader("Vehicle Activity Timeline")
 
             frame_data = vehicle_count["per_frame_counts"]
             # Downsample for performance
@@ -592,8 +599,12 @@ with tab_vehicle:
 
 
 # ============================================================
-# TAB 3: Pedestrian Analytics (person counting + PSI)
+# TAB 3: Flow Analytics (person counting + PSI)
 # ============================================================
+
+st.subheader("Foot Traffic & Congestion Analysis")
+st.caption("Understand pedestrian movement, congestion zones, and interaction with vehicles.")
+
 with tab_pedestrian:
     ped_scenes = get_available_scenes()
     if not ped_scenes:
@@ -622,23 +633,23 @@ with tab_pedestrian:
 
             with kp1:
                 if person_count:
-                    st.metric("Total Unique Persons", person_count["total_unique"])
+                    st.metric("Total Pedestrians", person_count["total_unique"])
 
             with kp2:
                 if person_count and person_count.get("per_frame_counts"):
                     counts = [f["count"] for f in person_count["per_frame_counts"]]
-                    st.metric("Avg Persons / Frame", f"{np.mean(counts):.1f}")
+                    st.metric("Average Foot Traffic", f"{np.mean(counts):.1f}")
 
             with kp3:
                 if person_count and person_count.get("per_frame_counts"):
                     counts = [f["count"] for f in person_count["per_frame_counts"]]
-                    st.metric("Peak Simultaneous", int(max(counts)))
+                    st.metric("Peak Crowd Density", int(max(counts)))
 
             with kp4:
                 if psi_data and psi_data.get("zones"):
                     peak_zone = max(psi_data["zones"], key=lambda z: z["peak_psi"])
                     st.metric(
-                        "Peak PSI",
+                        "Peak Congestion Level",
                         f"{peak_zone['peak_psi']:.1f}",
                         f"{peak_zone['area']}",
                     )
@@ -646,7 +657,7 @@ with tab_pedestrian:
             # --- Persons Over Time ---
             if person_count and person_count.get("per_frame_counts"):
                 st.markdown("---")
-                st.subheader("Persons Detected Over Time")
+                st.subheader("Pedestrian Flow Trends")
 
                 frame_data = person_count["per_frame_counts"]
                 step = max(1, len(frame_data) // 500)
@@ -663,10 +674,10 @@ with tab_pedestrian:
             # --- PSI Heatmap + Zone Table ---
             if psi_data and psi_data.get("zones"):
                 st.markdown("---")
-                st.subheader("Parking Stress Index (PSI)")
+                st.subheader("Congestion Heatmap & Risk Zones")
                 st.caption(
-                    "PSI combines pedestrian density, vehicle density, and their ratio "
-                    "into a single 0-10 score per zone. Higher = more stressed."
+                    "The Congestion Index combines pedestrian density, vehicle density, and interaction levels "
+                    "to identify high-risk and high-traffic zones in the parking area."
                 )
 
                 psi_left, psi_right = st.columns([3, 2])
@@ -734,13 +745,11 @@ with tab_pedestrian:
 
 
 # ============================================================
-# TAB 4: Anomaly Demo (real-time CHAD skeleton inference)
+# TAB 4: Live Monitoring (real-time CHAD skeleton inference)
 # ============================================================
 with tab_anomaly_live:
-    st.subheader("Real-Time Behavior Anomaly Detection")
-    st.caption(
-        "Plays a CHAD surveillance video while running skeleton-based anomaly detection "
-        "frame-by-frame. Alerts are triggered when the anomaly score crosses the threshold."
+    st.subheader("Real-Time Safety Monitoring")
+    st.caption("Detect unusual behaviors and potential risks using AI-powered anomaly detection."
     )
 
     # Check for trained model
@@ -814,10 +823,10 @@ with tab_anomaly_live:
 
             start_c, stop_c, _ = st.columns([1, 1, 3])
             with start_c:
-                if st.button("Start", key="anom_start", use_container_width=True):
+                if st.button("▶ Start Monitoring", key="anom_start", use_container_width=True):
                     st.session_state.anom_running = True
             with stop_c:
-                if st.button("Stop", key="anom_stop", use_container_width=True):
+                if st.button("⏹ Stop Monitoring", key="anom_stop", use_container_width=True):
                     st.session_state.anom_running = False
 
             st.markdown("---")
@@ -923,11 +932,11 @@ with tab_anomaly_live:
                         ak1, ak2 = st.columns(2)
                         with ak1:
                             st.metric("Current Score", f"{result.max_score:.4f}")
-                            st.metric("Persons in Frame", result.num_persons)
+                            st.metric("Active Individuals", result.num_persons)
                         with ak2:
                             st.metric("Alerts Triggered", alert_count)
                             gt_text = "Anomalous" if result.gt_label == 1 else "Normal"
-                            st.metric("Ground Truth", gt_text)
+                            st.metric("System Status", gt_text)
 
                     # Update score timeline chart (every 5 processed frames)
                     processed += 1
@@ -994,8 +1003,12 @@ with tab_anomaly_live:
 
 
 # ============================================================
-# TAB 5: Anomaly Detection (CHAD multi-camera)
+# TAB 5: Anomaly Alerts (CHAD multi-camera)
 # ============================================================
+
+st.subheader("Safety & Risk Analytics")
+st.caption("Analyze detected anomalies, system performance, and risk patterns across multiple cameras.")
+
 with tab_anomaly:
     models = get_available_anomaly_models()
     if not models:
@@ -1030,14 +1043,14 @@ with tab_anomaly:
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
             with kpi1:
-                st.metric("AUC-ROC", f"{overall['auc_roc']:.3f}")
+                st.metric("Detection Accuracy", f"{overall['auc_roc']:.3f}")
             with kpi2:
-                st.metric("AUC-PR", f"{overall['auc_pr']:.3f}")
+                st.metric("Precision-Recall Score", f"{overall['auc_pr']:.3f}")
             with kpi3:
-                st.metric("EER", f"{overall['eer']:.3f}")
+                st.metric("Error Rate", f"{overall['eer']:.3f}")
             with kpi4:
                 st.metric(
-                    "Test Sequences",
+                    "Total Evaluated Scenarios",
                     f"{overall['num_sequences']:,}",
                     f"{overall['num_anomalous']:,} anomalous",
                 )
@@ -1191,7 +1204,6 @@ with tab_anomaly:
             # --- Privacy Note ---
             st.markdown("---")
             st.caption(
-                "Privacy-by-design: This anomaly detection system operates exclusively on "
-                "skeleton keypoint coordinates (body joint positions). No pixel-level image data "
-                "is processed or stored, ensuring individual privacy while maintaining detection accuracy."
+                "VisionX ParkOps — AI-powered parking intelligence platform. "
+                "Delivering real-time insights, enhanced safety, and smarter urban mobility."
             )
