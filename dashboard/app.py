@@ -105,7 +105,7 @@ with tab_live:
                 key="live_video",
             )
         with ctrl_col2:
-            frame_skip = st.slider("Process every Nth frame", 1, 10, 3, key="live_skip")
+            frame_skip = st.slider("Process every Nth frame", 1, 15, 5, key="live_skip")
         with ctrl_col3:
             model_path = st.text_input(
                 "Model",
@@ -134,6 +134,7 @@ with tab_live:
             frame_placeholder = st.empty()
             fps_placeholder = st.empty()
             progress_placeholder = st.empty()
+            twin_live_placeholder = st.empty()
 
         with metrics_col:
             kpi_placeholder = st.empty()
@@ -208,7 +209,7 @@ with tab_live:
                         results = model.track(
                             source=frame_bgr,
                             persist=True,
-                            imgsz=1920,
+                            imgsz=1280,
                             conf=0.25,
                             classes=list(vehicle_classes.keys()),
                             verbose=False,
@@ -287,6 +288,18 @@ with tab_live:
                             )
                             occ_chart_placeholder.plotly_chart(
                                 fig_occ, use_container_width=True, key=f"occ_chart_{frame_idx}"
+                            )
+
+                        # Virtual twin map (every 10 processed frames)
+                        if processed % 10 == 0 and occ.get("occupied_space_ids"):
+                            from dashboard.virtual_twin import render_parking_map
+                            fig_twin_live = render_parking_map(
+                                parking_spaces, occ["occupied_space_ids"],
+                                title=f"Virtual Twin — t={timestamp:.1f}s",
+                            )
+                            twin_live_placeholder.plotly_chart(
+                                fig_twin_live, use_container_width=True,
+                                key=f"twin_live_{frame_idx}",
                             )
 
                         # Dwell distribution

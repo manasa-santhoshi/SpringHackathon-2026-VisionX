@@ -61,6 +61,7 @@ class MetricsAccumulator:
         self.occ_timestamps: list[float] = []
         self.occ_occupied: list[int] = []
         self.occ_free: list[int] = []
+        self.current_occupied_space_ids: set[int] = set()
 
         # Dwell time state
         self.active_tracks: dict[int, list[tuple[float, float, float]]] = {}
@@ -135,6 +136,7 @@ class MetricsAccumulator:
                 if space_id is not None:
                     occupied_spaces.add(space_id)
 
+            self.current_occupied_space_ids = {int(sid) for sid in occupied_spaces}
             n_occupied = len(occupied_spaces)
             self.occ_timestamps.append(round(frame.timestamp, 2))
             self.occ_occupied.append(n_occupied)
@@ -234,6 +236,7 @@ class MetricsAccumulator:
                 "free": self.occ_free,
                 "total_spaces": self.total_spaces,
                 "current_occupied": self.occ_occupied[-1] if self.occ_occupied else 0,
+                "occupied_space_ids": list(self.current_occupied_space_ids),
             },
             "dwell": {
                 "completed": len(self.completed_dwells),

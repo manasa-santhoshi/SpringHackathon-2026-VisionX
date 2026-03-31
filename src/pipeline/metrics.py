@@ -128,6 +128,7 @@ def compute_occupancy_timeline(
     timestamps = []
     occupied_counts = []
     free_counts = []
+    occupied_space_ids: list[list[int]] = []
     by_area = {area: {"occupied": [], "total": count} for area, count in area_totals.items()}
 
     last_sampled_time = -sample_interval  # ensure first frame is sampled
@@ -152,6 +153,7 @@ def compute_occupancy_timeline(
         timestamps.append(round(frame.timestamp, 2))
         occupied_counts.append(n_occupied)
         free_counts.append(total_spaces - n_occupied)
+        occupied_space_ids.append([int(sid) for sid in occupied_spaces])
 
         for area in by_area:
             by_area[area]["occupied"].append(area_occupied.get(area, 0))
@@ -162,6 +164,7 @@ def compute_occupancy_timeline(
         "free": free_counts,
         "total_spaces": total_spaces,
         "by_area": by_area,
+        "occupied_space_ids": occupied_space_ids,
     }
 
 
