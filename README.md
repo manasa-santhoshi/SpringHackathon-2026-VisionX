@@ -37,7 +37,7 @@ Finally, make sure you download both the fine-tuned YOLOv11 on VisDrone (`bestVi
 
 ```bash
 # from root
-mv ~/<path_to_YOLOv11_fine_tuned> models/yolo11n-visdrone/
+mv ~/<path_to_YOLOv11_fine_tuned> models/yolo11n-visdrone/weights/
 mv ~/<path_to_MPED-RNN> models/anomaly/cam_1_2_3_4/
 ```
 
