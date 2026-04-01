@@ -22,7 +22,6 @@ cycler==0.12.1
 debugpy==1.8.20
 decorator==5.2.1
 defusedxml==0.7.1
--e file:///Users/christianfaccio/UniTs/projects/SpringHackathon-2026-VisionX/dlp-dataset
 executing==2.2.1
 fastjsonschema==2.21.2
 filelock==3.25.2
