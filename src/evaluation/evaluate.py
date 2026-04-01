@@ -67,7 +67,7 @@ def load_ground_truth(scene_name: str) -> tuple[Dataset, str]:
     ds = Dataset()
     data_dir = PROJECT_ROOT / "data" / "raw" / "DLP" / "json"
     ds.load(str(data_dir / scene_name))
-    scene_token = list(ds.scene.keys())[0]
+    scene_token = list(ds.scenes.keys())[0]
     return ds, scene_token
 
 
