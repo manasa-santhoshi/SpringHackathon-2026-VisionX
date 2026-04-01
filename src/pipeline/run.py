@@ -9,18 +9,18 @@ Usage:
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 # Add project root to path for DLP submodule
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "dlp-dataset"))
 
-from dlp.visualizer import Visualizer
-from dlp.dataset import Dataset
-
 from src.detection.yolo_detector import YOLODetector
+from src.pipeline.run_congestion import CongestionAnalyzer
 from src.pipeline.homography import compute_homography, load_homography, save_homography
 from src.pipeline.metrics import (
     compute_dwell_times,
@@ -29,6 +29,9 @@ from src.pipeline.metrics import (
     compute_vehicle_count,
 )
 
+# DLP Dataset imports (required for get_parking_spaces)
+from dlp.dataset import Dataset
+from dlp.visualizer import Visualizer
 
 def get_parking_spaces() -> "pd.DataFrame":
     """Load parking spaces DataFrame from the DLP Visualizer."""
@@ -52,12 +55,29 @@ def get_scene_name(video_path: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Parking lot analytics pipeline")
     parser.add_argument("--video", required=True, help="Path to the video file")
-    parser.add_argument("--model", default=str(PROJECT_ROOT / "models/yolo11n-dlp/weights/best.pt"),
-                        help="YOLO model path (default: DLP-finetuned model)")
-    parser.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold")
-    parser.add_argument("--imgsz", type=int, default=1920, help="Inference image size")
-    parser.add_argument("--sample-interval", type=float, default=1.0,
-                        help="Occupancy sampling interval in seconds")
+    parser.add_argument(
+        "--model",
+        default=str(PROJECT_ROOT / "models/yolo11n-dlp/weights/best.pt"),
+        help="YOLO model path (default: DLP-finetuned model)",
+    )
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.25,
+        help="Detection confidence threshold",
+    )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=1920,
+        help="Inference image size",
+    )
+    parser.add_argument(
+        "--sample-interval",
+        type=float,
+        default=1.0,
+        help="Occupancy sampling interval in seconds",
+    )
     args = parser.parse_args()
 
     video_path = Path(args.video).resolve()
@@ -67,7 +87,9 @@ def main():
     output_dir = PROJECT_ROOT / "data" / "processed" / scene_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Step 1: Homography ---
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 1: Homography
+    # ─────────────────────────────────────────────────────────────────────────
     homography_path = output_dir / "homography.npy"
     xml_path = video_path.parent / f"{scene_name}_data.xml"
 
@@ -83,7 +105,9 @@ def main():
         print("Cannot compute homography. Metrics requiring ground coords will be unavailable.")
         H = None
 
-    # --- Step 2: Detection + Tracking ---
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 2: Detection + Tracking
+    # ─────────────────────────────────────────────────────────────────────────
     print(f"\nRunning YOLOv11 detection + tracking on {video_path}")
     detector = YOLODetector(model_name=args.model, conf_threshold=args.conf)
     detections = detector.detect_and_track(str(video_path), imgsz=args.imgsz)
@@ -110,7 +134,9 @@ def main():
         json.dump(detections_data, f)
     print(f"Saved detections to {output_dir / 'detections.json'}")
 
-    # --- Step 3: Compute metrics ---
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 3: Compute Metrics
+    # ─────────────────────────────────────────────────────────────────────────
     print("\nComputing metrics...")
 
     # Metric 1: Vehicle count
@@ -140,8 +166,10 @@ def main():
         with open(output_dir / "dwell_times.json", "w") as f:
             json.dump(dwell, f, indent=2)
         if dwell["stats"]:
-            print(f"  Dwell times: mean {dwell['stats']['mean_sec']}s, "
-                  f"median {dwell['stats']['median_sec']}s ({dwell['stats']['count']} events)")
+            print(
+                f"  Dwell times: mean {dwell['stats']['mean_sec']}s, "
+                f"median {dwell['stats']['median_sec']}s ({dwell['stats']['count']} events)"
+            )
 
         # Metric 4: Entry/exit
         entry_exit = compute_entry_exit(detections, H)
@@ -151,8 +179,29 @@ def main():
     else:
         print("  Skipping spatial metrics (no homography available)")
 
-    print(f"\nAll results saved to {output_dir}/")
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 4: Congestion Analysis
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\nRunning congestion zone analysis...")
+    try:
+        analyzer = CongestionAnalyzer(
+            base_dir=str(PROJECT_ROOT),
+            scene_name=scene_name,
+            frame_w=3840,
+            frame_h=2160,
+            grid_rows=4,
+            grid_cols=4,
+        )
+        congestion_results = analyzer.analyze()
+        print(f"  Congestion data saved to {output_dir / 'dashboard_data'}/")
+    except FileNotFoundError as exc:
+        print(f"  WARNING: Congestion analysis skipped — {exc}")
+    except Exception as exc:
+        print(f"  WARNING: Congestion analysis failed — {exc}")
+        traceback.print_exc()
+
+    print(f"\n All results saved to {output_dir}/")
 
 
 if __name__ == "__main__":
-    main()
+    main() 
